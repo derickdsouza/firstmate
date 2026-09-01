@@ -46,6 +46,9 @@
 #                                followups to 0
 #   fmx_meta_followups_set <meta> <n> - rewrite just the follow-up counter
 #   fmx_meta_link_clear <meta> - remove the X-request link entirely
+#   fmx_sanitize_mention_payload_file <json-file>
+#                                - rewrite agent-facing mention strings through
+#                                bin/fm-untrusted-text-lib.sh; other fields stay
 # Callers must have FM_HOME set before calling fmx_load_config.
 
 _FM_X_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +57,10 @@ if ! command -v fm_backlog_atomic_transition >/dev/null 2>&1; then
   . "$_FM_X_LIB_DIR/fm-tasks-axi-lib.sh"
   # shellcheck source=bin/fm-backlog-transition-lib.sh
   . "$_FM_X_LIB_DIR/fm-backlog-transition-lib.sh"
+fi
+if ! command -v fm_sanitize_untrusted_text_var >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-untrusted-text-lib.sh
+  . "$_FM_X_LIB_DIR/fm-untrusted-text-lib.sh"
 fi
 
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
@@ -997,4 +1004,82 @@ fmx_meta_link_clear() {
     rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
   fm_lock_release "$lock"
+}
+
+# Rewrite agent-facing string fields of a stashed mention JSON file through
+# fm_sanitize_untrusted_text_var. Top-level .text, .in_reply_to.text, and each
+# .in_reply_to_chain[].text are sanitized when they are strings; every other
+# field is left intact. bin/fm-untrusted-text-lib.sh owns the transform.
+fmx_sanitize_mention_payload_file() {
+  local file=$1 tmp chain_json n i item text irt irt_present=0
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
+
+  text=$(jq -r 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+    rm -f "$tmp"
+    return 1
+  }
+  fm_sanitize_untrusted_text_var "$text"
+  text=$FM_UNTRUSTED_TEXT
+
+  if jq -e '.in_reply_to | type == "object"' "$file" >/dev/null 2>&1; then
+    irt_present=1
+    irt=$(jq -r '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+      rm -f "$tmp"
+      return 1
+    }
+    fm_sanitize_untrusted_text_var "$irt"
+    irt=$FM_UNTRUSTED_TEXT
+  fi
+
+  chain_json='[]'
+  n=$(jq -r '.in_reply_to_chain | if type == "array" then length else 0 end' "$file" 2>/dev/null) || {
+    rm -f "$tmp"
+    return 1
+  }
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    item=$(jq -r --argjson i "$i" '.in_reply_to_chain[$i] | if type == "object" and ((.text | type) == "string") then .text else "" end' "$file" 2>/dev/null) || {
+      rm -f "$tmp"
+      return 1
+    }
+    fm_sanitize_untrusted_text_var "$item"
+    chain_json=$(jq -n --argjson c "$chain_json" --arg t "$FM_UNTRUSTED_TEXT" '$c + [$t]') || {
+      rm -f "$tmp"
+      return 1
+    }
+    i=$((i + 1))
+  done
+
+  if [ "$irt_present" -eq 1 ]; then
+    jq --arg t "$text" --arg irt "$irt" --argjson chain "$chain_json" '
+      .text = $t
+      | if .in_reply_to | type == "object" then .in_reply_to.text = $irt else . end
+      | if (.in_reply_to_chain | type == "array") and ($chain | type == "array") then
+          .in_reply_to_chain = [
+            range(0; (.in_reply_to_chain | length)) as $i
+            | .in_reply_to_chain[$i]
+            | if type == "object" then .text = ($chain[$i] // .text) else . end
+          ]
+        else .
+        end
+    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  else
+    jq --arg t "$text" --argjson chain "$chain_json" '
+      .text = $t
+      | if (.in_reply_to_chain | type == "array") and ($chain | type == "array") then
+          .in_reply_to_chain = [
+            range(0; (.in_reply_to_chain | length)) as $i
+            | .in_reply_to_chain[$i]
+            | if type == "object" then .text = ($chain[$i] // .text) else . end
+          ]
+        else .
+        end
+    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  if ! mv -f "$tmp" "$file"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }

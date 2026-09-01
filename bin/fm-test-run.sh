@@ -212,7 +212,7 @@ family_for_basename() {
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-untrusted-text.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -1223,6 +1223,10 @@ families_for_changed_path() {
       # Pin or cleanup changes also select the real-Herdr family so the required
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
+      ;;
+    bin/fm-untrusted-text-lib.sh)
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
       ;;
     bin/fm-lint.sh|bin/fm-lint-workflows.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-install-actionlint.sh|\

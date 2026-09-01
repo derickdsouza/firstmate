@@ -11,10 +11,11 @@
 # Behavior when X mode is on:
 #   HTTP 204 / empty / missing text              -> print nothing, exit 0 (no wake)
 #   auth/config errors                           -> print one rate-limited diagnostic
-#   a newly offered mention with non-empty text -> stash the full object to
-#       state/x-inbox/<request_id>.json, record the durable per-request reply
-#       context to state/x-context/<request_id>.json (best-effort), atomically
-#       claim state/x-context/<request_id>.offered.json, and print one compact
+#   a newly offered mention with non-empty text -> sanitize agent-facing
+#       strings, stash the object to state/x-inbox/<request_id>.json, record
+#       the durable per-request reply context to
+#       state/x-context/<request_id>.json (best-effort), atomically claim
+#       state/x-context/<request_id>.offered.json, and print one compact
 #       line "x-mention <request_id>" (which becomes the watcher wake payload)
 #   an already offered request_id                -> print nothing, exit 0
 #   a new set of unreconciled public-followup terminal results -> print one
@@ -25,9 +26,10 @@
 # check only exists in a home that opted into the relay, and it is an O(1)
 # directory presence test plus a signature compare, with no tasks-axi call and no
 # backlog scan. A home with no pending terminal results pays nothing for it.
-# The full object is stashed verbatim, so every conversation-context field the
-# relay includes is preserved for fmx-respond to handle with continuity; the
-# Relay section of docs/configuration.md owns that payload's wire contract. The
+# Agent-facing strings are sanitized before stash through
+# bin/fm-untrusted-text-lib.sh so injection payloads cannot pose as operational
+# input; every other field the relay includes is preserved for fmx-respond.
+# The Relay section of docs/configuration.md owns that payload's wire contract. The
 # durable context record lets a delayed follow-up recover the ORIGINAL
 # platform/budget even after this inbox file is drained.
 #
@@ -129,14 +131,6 @@ esac
 REQ=$(jq -r '.request_id // empty' "$BODY_FILE" 2>/dev/null) || exit 0
 [ -n "$REQ" ] || { clear_error; exit 0; }
 
-# A pending mention only reaches the agent when it has non-empty text.
-# Semantic worthiness is decided by fmx-respond, so acknowledgments can still be
-# stashed here and deliberately skipped there.
-# Empty/absent/null text must not stash an inbox file or wake a public X flow for
-# nothing - stay inert (exit 0).
-TEXT=$(jq -r '(.text // "") | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "")' "$BODY_FILE" 2>/dev/null) || exit 0
-[ -n "$TEXT" ] || { clear_error; exit 0; }
-
 # Defend the inbox filename: request_id is relay-issued (e.g. "req-7"), but never
 # trust it into a path. Reject anything outside a safe slug.
 case "$REQ" in
@@ -152,6 +146,19 @@ if fmx_private_artifact_file_valid "$STATE/x-context" "$REQ.offered.json" 600; t
   clear_claim_error
   exit 0
 fi
+
+# Neutralize untrusted mention and thread strings before the empty-text gate
+# and the stash. bin/fm-untrusted-text-lib.sh owns the transform.
+fmx_sanitize_mention_payload_file "$BODY_FILE" || exit 0
+
+# A pending mention only reaches the agent when it has non-empty text.
+# Semantic worthiness is decided by fmx-respond, so acknowledgments can still be
+# stashed here and deliberately skipped there.
+# Empty/absent/null text must not stash an inbox file or wake a public X flow for
+# nothing - stay inert (exit 0). Injection-only payloads that sanitize to empty
+# take the same path.
+TEXT=$(jq -r '(.text // "") | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "")' "$BODY_FILE" 2>/dev/null) || exit 0
+[ -n "$TEXT" ] || { clear_error; exit 0; }
 
 INBOX="$STATE/x-inbox"
 # Stash the full mention object atomically so a concurrent reader never sees a
