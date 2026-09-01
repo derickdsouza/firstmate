@@ -235,10 +235,98 @@ fmx_poll_shim_private_identity_valid() {
   fmx_poll_shim_identity_valid "$1" 700
 }
 
+# Harbor telegram-hitl registers an alternate poll shim via install.sh; the
+# manifest path is stable across harbor releases (see harbor docs/agents/telegram-hitl.md).
+fmx_poll_shim_registration_path() {
+  printf '%s/config/harbor-telegram-hitl.poll-shim.registration.json' "$1"
+}
+
+# True when <file> matches a validated harbor poll-shim registration manifest.
+fmx_poll_shim_registered_valid() {
+  local file=$1 home=$2 reg exec_target expected_hash actual_hash version check_id
+  reg=$(fmx_poll_shim_registration_path "$home")
+  [ -f "$reg" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  version=$(jq -r '.registration_version // empty' "$reg" 2>/dev/null) || return 1
+  check_id=$(jq -r '.check_id // empty' "$reg" 2>/dev/null) || return 1
+  exec_target=$(jq -r '.exec_target // empty' "$reg" 2>/dev/null) || return 1
+  expected_hash=$(jq -r '.sha256 // empty' "$reg" 2>/dev/null) || return 1
+  [ "$version" = 1.0.0 ] || return 1
+  [ -n "$check_id" ] || return 1
+  [ -n "$exec_target" ] || return 1
+  [ "${exec_target#/}" != "$exec_target" ] || return 1
+  [ -x "$exec_target" ] || return 1
+  grep -qF "$exec_target" "$file" 2>/dev/null || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual_hash=$(sha256sum "$file" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_hash=$(shasum -a 256 "$file" | awk '{print $1}')
+  else
+    return 1
+  fi
+  [ "$actual_hash" = "$expected_hash" ]
+}
+
 fmx_poll_shim_valid() {
   local file=$1 home=$2 root=$3
   fmx_poll_shim_private_identity_valid "$file" || return 1
-  cmp -s "$file" <(fmx_poll_shim_content "$home" "$root")
+  if cmp -s "$file" <(fmx_poll_shim_content "$home" "$root"); then
+    return 0
+  fi
+  fmx_poll_shim_registered_valid "$file" "$home"
+}
+
+# Record that the initial relay answer for <request_id> landed (answer endpoint only).
+# Used by fm-spawn to enforce ack-before-long-work (#149 / relay-task-offloading).
+fmx_inbox_ack_mark() {
+  local state=$1 rid=$2 dir now record
+  case "$rid" in
+    ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  now=${FMX_NOW_OVERRIDE:-$(date +%s)}
+  case "$now" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "${#now}" -le 18 ] || return 1
+  record=$(jq -cn --arg rid "$rid" --argjson answered_at "$now" \
+    '{request_id:$rid, answered_at:$answered_at}') || return 1
+  dir="$state/x-context"
+  printf '%s\n' "$record" \
+    | fmx_private_artifact_publish_stdin "$dir" "$rid.answered.json" 600
+}
+
+fmx_inbox_ack_present() {
+  local state=$1 rid=$2
+  case "$rid" in
+    ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  fmx_private_artifact_file_valid "$state/x-context" "$rid.answered.json" 600
+}
+
+# Print the first open inbox request_id that lacks an initial answer marker, or nothing.
+fmx_inbox_pending_without_ack() {
+  local state=$1 f rid base
+  [ -d "$state/x-inbox" ] && [ ! -L "$state/x-inbox" ] || return 0
+  shopt -s nullglob
+  for f in "$state/x-inbox"/*.json; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f" .json)
+    fmx_inbox_ack_present "$state" "$base" && continue
+    printf '%s\n' "$base"
+    shopt -u nullglob
+    return 0
+  done
+  shopt -u nullglob
+  return 0
+}
+
+# Refuse fm-spawn while a relay mention is open without a Telegram ack (#149).
+fmx_inbox_spawn_guard() {
+  local state=$1 pending
+  pending=$(fmx_inbox_pending_without_ack "$state")
+  [ -n "$pending" ] || return 0
+  echo "error: spawn refused: relay mention $pending has no Telegram ack yet; post bin/fm-x-reply.sh $pending before spawning work (fmx-respond / relay-task-offloading)" >&2
+  return 1
 }
 
 # Resolve the X-mode settings into FMX_TOKEN, FMX_RELAY, FMX_DRY, FMX_MAX,

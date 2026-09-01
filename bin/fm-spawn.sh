@@ -306,6 +306,12 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
+# shellcheck source=bin/fm-x-lib.sh
+. "$SCRIPT_DIR/fm-x-lib.sh"
+fmx_load_config
+if [ -n "$FMX_TOKEN" ]; then
+  fmx_inbox_spawn_guard "$STATE" || exit 1
+fi
 # Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
 # set by the batch loop below), so the guard runs once for the batch, not once per pair.
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true

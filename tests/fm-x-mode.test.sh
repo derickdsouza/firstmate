@@ -930,6 +930,73 @@ SH
   pass "bootstrap reports failed X artifact cleanup on opt-out"
 }
 
+test_poll_shim_accepts_registered_harbor_alternate() {
+  local home poll_target shim hash
+  home="$TMP_ROOT/poll-shim-reg"
+  mkdir -p "$home/state" "$home/config"
+  poll_target="$home/fm-x-poll-harbor.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$poll_target"
+  chmod 700 "$poll_target"
+  shim="$home/state/x-watch.check.sh"
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+export FM_HOME='$home'
+export FM_FIRSTMATE_ROOT='$home'
+export HARBOR_TG_HITL_FIRSTMATE_ROOT='$home'
+exec '$poll_target'
+EOF
+  chmod 700 "$shim"
+  if command -v sha256sum >/dev/null 2>&1; then
+    hash=$(sha256sum "$shim" | awk '{print $1}')
+  else
+    hash=$(shasum -a 256 "$shim" | awk '{print $1}')
+  fi
+  jq -cn --arg version "1.0.0" --arg check_id "harbor-tg-hitl" \
+    --arg exec_target "$poll_target" --arg sha256 "$hash" --arg harbor_root "/opt/harbor" \
+    '{registration_version:$version,check_id:$check_id,exec_target:$exec_target,sha256:$sha256,harbor_root:$harbor_root}' \
+    > "$home/config/harbor-telegram-hitl.poll-shim.registration.json"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-x-lib.sh"
+  fmx_poll_shim_valid "$shim" "$home" "$ROOT" || fail "registered harbor poll shim must validate"
+  pass "fmx_poll_shim_valid honors harbor-telegram-hitl registration manifest"
+}
+
+test_spawn_refuses_open_inbox_without_ack() {
+  local home out rc
+  home="$TMP_ROOT/spawn-inbox-ack"
+  private_artifact_dir "$home/state"
+  private_artifact_dir "$home/state/x-inbox"
+  mkdir -p "$home/data" "$home/config"
+  printf 'FMX_PAIRING_TOKEN=tok-ack\n' > "$home/.env"
+  printf '{"request_id":"req-ack","text":"look into harbor"}' \
+    | bash -c '. "$1/bin/fm-x-lib.sh"; cat | fmx_private_artifact_publish_stdin "$2/state/x-inbox" req-ack.json 600' _ "$ROOT" "$home"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" ack-guard-task /tmp --scout 2>&1); rc=$?
+  expect_code 1 "$rc" "spawn with open inbox must refuse"
+  assert_contains "$out" "req-ack" "spawn refusal must name the pending request"
+  assert_contains "$out" "Telegram ack" "spawn refusal must cite ack requirement"
+  pass "fm-spawn refuses while a relay inbox row lacks an initial answer"
+}
+
+test_spawn_passes_inbox_guard_after_ack_marked() {
+  local home out
+  home="$TMP_ROOT/spawn-inbox-acked"
+  private_artifact_dir "$home/state"
+  private_artifact_dir "$home/state/x-inbox"
+  private_artifact_dir "$home/state/x-context"
+  mkdir -p "$home/data" "$home/config"
+  printf 'FMX_PAIRING_TOKEN=tok-ack2\n' > "$home/.env"
+  printf '{"request_id":"req-acked","text":"ship it"}' \
+    | bash -c '. "$1/bin/fm-x-lib.sh"; cat | fmx_private_artifact_publish_stdin "$2/state/x-inbox" req-acked.json 600' _ "$ROOT" "$home"
+  FMX_NOW_OVERRIDE=1700000000 bash -c '. "$1/bin/fm-x-lib.sh"; fmx_inbox_ack_mark "$2/state" req-acked' _ "$ROOT" "$home"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" acked-guard-task /tmp --scout 2>&1) || true
+  assert_not_contains "$out" "Telegram ack" "acked inbox must pass the spawn guard"
+  pass "fm-spawn passes inbox ack guard after the initial answer marker is recorded"
+}
+
 test_reply_dry_run_records_not_posts() {
   local home fakebin log out rc
   home="$TMP_ROOT/reply-dry"; mkdir -p "$home"
@@ -3040,3 +3107,6 @@ test_bootstrap_does_not_follow_x_artifact_symlinks
 test_bootstrap_inert_without_token
 test_bootstrap_opt_out_cleanup
 test_bootstrap_opt_out_reports_cleanup_failure
+test_poll_shim_accepts_registered_harbor_alternate
+test_spawn_refuses_open_inbox_without_ack
+test_spawn_passes_inbox_guard_after_ack_marked
