@@ -149,6 +149,8 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 5. If you reproduced a bug, turn that reproduction into a regression test.
 6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
 
+$(fm_layering_line)
+
 EOF
   fm_dod_block "$MODE" "$ID"
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }

@@ -5,6 +5,10 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
+# fm_layering_line prints the worker-facing rule-file layering contract and is
+# that sentence's single owner: bin/fm-brief.sh renders it into a ship brief's
+# project-memory section, and bin/fm-promote.sh into a promoted scout's ship
+# instructions, so both worker classes receive the same rule.
 # fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
 # stdout with no trailing blank line. The caller validates the mode; an unknown
 # mode is refused rather than silently rendered as the pipeline contract.
@@ -64,4 +68,10 @@ EOF
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
       return 1 ;;
   esac
+}
+
+fm_layering_line() {
+  cat <<EOF
+A shared worker-facing rule file is law: never replace it with a same-named project file; put that specialization in a clearly-namespaced \`local-*\` file instead.
+EOF
 }
