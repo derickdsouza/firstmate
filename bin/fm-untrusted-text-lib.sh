@@ -7,7 +7,8 @@
 #
 # Public contract:
 #   Output is at most FM_UNTRUSTED_TEXT_CAP characters (8192), counting
-#   Unicode scalars under a UTF-8 locale, never splitting a multibyte character.
+#   Unicode scalars by walking UTF-8 bytes so a missing UTF-8 locale cannot
+#   switch the cap to byte indexing or split a multibyte character.
 #   Over-cap input is cut and then FM_UNTRUSTED_TEXT_SUFFIX is appended inside
 #   that same cap. HTML comments are removed; an unclosed comment drops the
 #   remainder. Invisible format characters used to hide prefixes are stripped,
@@ -51,12 +52,36 @@ if [ -z "${FM_OPERATIONAL_PREFIX+x}" ]; then
   . "$_FM_UNTRUSTED_TEXT_LIB_DIR/fm-operational-input.sh"
 fi
 
-fm_untrusted_text_utf8_locale() {
-  local saved=${LC_ALL:-${LANG:-}}
-  case "$saved" in
-    C|POSIX|'') printf '%s\n' C.UTF-8 ;;
-    *) printf '%s\n' "$saved" ;;
-  esac
+# Byte length of the first `max` Unicode scalars in `text`.
+# Walks UTF-8 under LC_ALL=C so ${#} and ${var:n:m} stay byte-indexed.
+# Incomplete trailing sequences are omitted rather than emitted as invalid UTF-8.
+# Sets FM_UNTRUSTED_UTF8_BYTES.
+fm_untrusted_utf8_prefix_bytes() {
+  local text=$1 max=$2
+  local LC_ALL=C
+  local i=0 byte_len=${#text} count=0 rem seq ord b
+  while [ "$count" -lt "$max" ] && [ "$i" -lt "$byte_len" ]; do
+    rem=$((byte_len - i))
+    b=${text:i:1}
+    ord=$(printf '%d' "'$b")
+    if [ "$ord" -lt 128 ]; then
+      seq=1
+    elif [ "$ord" -ge 194 ] && [ "$ord" -le 223 ]; then
+      seq=2
+    elif [ "$ord" -ge 224 ] && [ "$ord" -le 239 ]; then
+      seq=3
+    elif [ "$ord" -ge 240 ] && [ "$ord" -le 244 ]; then
+      seq=4
+    else
+      seq=1
+    fi
+    if [ "$seq" -gt "$rem" ]; then
+      break
+    fi
+    i=$((i + seq))
+    count=$((count + 1))
+  done
+  FM_UNTRUSTED_UTF8_BYTES=$i
 }
 
 fm_untrusted_strip_html_comments_var() {
@@ -83,10 +108,11 @@ fm_untrusted_strip_format_chars_var() {
   # Strip Cf / bidi / BOM / soft-hyphen hides. Do not strip U+200D ZWJ.
   for c in \
     $'\xE2\x80\x8B' $'\xE2\x80\x8C' $'\xE2\x81\xA0' $'\xE2\x81\xA3' \
+    $'\xE2\x81\xA1' $'\xE2\x81\xA2' $'\xE2\x81\xA4' $'\xE2\x81\xA5' \
     $'\xEF\xBB\xBF' $'\xE2\x80\x8E' $'\xE2\x80\x8F' \
     $'\xE2\x80\xAA' $'\xE2\x80\xAB' $'\xE2\x80\xAC' $'\xE2\x80\xAD' $'\xE2\x80\xAE' \
     $'\xE2\x81\xA6' $'\xE2\x81\xA7' $'\xE2\x81\xA8' $'\xE2\x81\xA9' \
-    $'\xC2\xAD'
+    $'\xC2\xAD' $'\xD8\x9C' $'\xE1\xA0\x8E'
   do
     text=${text//"$c"/}
   done
@@ -179,16 +205,35 @@ fm_untrusted_neutralize_role_lines_var() {
 }
 
 fm_untrusted_truncate_var() {
-  local text=$1 max=${2:-$FM_UNTRUSTED_TEXT_CAP} keep loc
-  loc=$(fm_untrusted_text_utf8_locale)
-  local LC_ALL=$loc
-  if [ "${#text}" -le "$max" ]; then
+  local text=$1 max=${2:-$FM_UNTRUSTED_TEXT_CAP} keep byte_len
+  local probe=$'\xE4\xB8\x80'
+  # UTF-8 locales: bash ${#} and ${var:n:m} already count scalars.
+  if [ "${#probe}" -eq 1 ]; then
+    if [ "${#text}" -le "$max" ]; then
+      FM_UNTRUSTED_TEXT=$text
+      return 0
+    fi
+    keep=$((max - ${#FM_UNTRUSTED_TEXT_SUFFIX}))
+    [ "$keep" -ge 0 ] || keep=0
+    FM_UNTRUSTED_TEXT="${text:0:$keep}$FM_UNTRUSTED_TEXT_SUFFIX"
+    return 0
+  fi
+  # C / POSIX: ${#} is bytes. Walk UTF-8 so the cap stays in scalars.
+  local LC_ALL=C
+  byte_len=${#text}
+  if [ "$byte_len" -le "$max" ]; then
+    FM_UNTRUSTED_TEXT=$text
+    return 0
+  fi
+  fm_untrusted_utf8_prefix_bytes "$text" "$max"
+  if [ "$FM_UNTRUSTED_UTF8_BYTES" -eq "$byte_len" ]; then
     FM_UNTRUSTED_TEXT=$text
     return 0
   fi
   keep=$((max - ${#FM_UNTRUSTED_TEXT_SUFFIX}))
   [ "$keep" -ge 0 ] || keep=0
-  FM_UNTRUSTED_TEXT="${text:0:$keep}$FM_UNTRUSTED_TEXT_SUFFIX"
+  fm_untrusted_utf8_prefix_bytes "$text" "$keep"
+  FM_UNTRUSTED_TEXT="${text:0:$FM_UNTRUSTED_UTF8_BYTES}$FM_UNTRUSTED_TEXT_SUFFIX"
 }
 
 fm_sanitize_untrusted_text_var() {
