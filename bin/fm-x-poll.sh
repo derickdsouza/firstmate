@@ -152,7 +152,10 @@ fi
 
 # Neutralize untrusted mention and thread strings before the empty-text gate
 # and the stash. bin/fm-untrusted-text-lib.sh owns the transform.
-fmx_sanitize_mention_payload_file "$BODY_FILE" || exit 0
+if ! fmx_sanitize_mention_payload_file "$BODY_FILE"; then
+  emit_error_once "cannot sanitize mention"
+  exit 0
+fi
 
 # A pending mention only reaches the agent when it has non-empty text.
 # Semantic worthiness is decided by fmx-respond, so acknowledgments can still be

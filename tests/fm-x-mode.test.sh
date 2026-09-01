@@ -609,6 +609,34 @@ test_poll_sanitize_preserves_trailing_newlines() {
   pass "fm-x-poll sanitize preserves trailing newlines in mention text"
 }
 
+test_poll_sanitize_failure_reports_error() {
+  local home fakebin out rc body real_jq jqdir
+  home="$TMP_ROOT/poll-sanitize-fail"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  real_jq=$(command -v jq)
+  jqdir=$(mktemp -d "$home/jqbin.XXXXXX")
+  cat > "$jqdir/jq" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  [ "$a" = "-j" ] && exit 1
+done
+exec "$REAL_JQ_BIN" "$@"
+SH
+  chmod +x "$jqdir/jq"
+  printf 'FMX_PAIRING_TOKEN=tok-sf\n' > "$home/.env"
+  body='{"request_id":"req-sf","tweet_id":"17","text":"please ship"}'
+  out=$(PATH="$jqdir:$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    REAL_JQ_BIN="$real_jq" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "sanitize-failure poll exit"
+  [ "$out" = "x-mode-error cannot sanitize mention" ] \
+    || fail "a sanitize failure must surface one diagnostic (got: $out)"
+  assert_absent "$home/state/x-inbox/req-sf.json" \
+    "a sanitize failure must not stash an inbox file"
+  pass "fm-x-poll reports a sanitize failure instead of exiting silently"
+}
+
 # Each chain entry is rewritten with its own jq --arg so argv stays bounded.
 test_poll_sanitizes_long_reply_chain() {
   local home fakebin out rc body f i got
@@ -3167,6 +3195,7 @@ test_poll_comment_only_mention_claimed_and_dismissed
 test_poll_empty_mention_dismiss_failure_still_claims
 test_poll_sanitize_preserves_nonstring_text_fields
 test_poll_sanitize_preserves_trailing_newlines
+test_poll_sanitize_failure_reports_error
 test_poll_sanitizes_long_reply_chain
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths

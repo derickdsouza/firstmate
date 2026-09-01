@@ -46,27 +46,6 @@ FM_UNTRUSTED_TEXT_SUFFIX=' [truncated]'
 FM_UNTRUSTED_ROLE_STANDIN='[role] '
 FM_UNTRUSTED_OP_STANDIN='[op] '
 
-# Every scalar POSIX [[:space:]] covers in ASCII, plus every code point
-# Unicode gives White_Space=Yes outside ASCII, as UTF-8 byte sequences built
-# from octal escapes so each entry stays reviewable in source (the same list
-# and reason as bin/fm-composer-lib.sh, issue #1988): the daemon runs this
-# transform under LC_ALL=C, where [[:space:]] misses U+3000 and friends, so
-# whitespace classification here must not depend on the ambient locale.
-# U+200B ZERO WIDTH SPACE is deliberately absent (White_Space=No) and is
-# handled by the invisible-format strip instead.
-FM_UNTRUSTED_WS_SCALARS=(' ' $'\t' $'\v' $'\f' $'\r')
-for _fm_untrusted_ws_octal in \
-  '\0302\0205' '\0302\0240' '\0341\0232\0200' \
-  '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' \
-  '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' \
-  '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' \
-  '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' \
-  '\0342\0201\0237' '\0343\0200\0200'; do
-  printf -v _fm_untrusted_ws_utf8 '%b' "$_fm_untrusted_ws_octal"
-  FM_UNTRUSTED_WS_SCALARS+=("$_fm_untrusted_ws_utf8")
-done
-unset -v _fm_untrusted_ws_octal _fm_untrusted_ws_utf8
-
 _FM_UNTRUSTED_TEXT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${FM_OPERATIONAL_PREFIX+x}" ]; then
   # shellcheck source=bin/fm-operational-input.sh
@@ -162,23 +141,57 @@ fm_untrusted_strip_operational_prefixes_var() {
   FM_UNTRUSTED_TEXT=$text
 }
 
-# Longest prefix of $1 made of FM_UNTRUSTED_WS_SCALARS, byte-exactly, so the
-# match never depends on the ambient locale. Sets FM_UNTRUSTED_WS_LEAD.
+# Longest prefix of $1 made of whitespace, matched byte-exactly against the
+# POSIX [[:space:]] ASCII set plus every code point Unicode gives
+# White_Space=Yes outside ASCII, so classification never depends on the
+# ambient locale (the daemon runs under LC_ALL=C, where [[:space:]] misses
+# U+3000 and friends; the same list and reason as bin/fm-composer-lib.sh,
+# issue #1988). U+200B ZERO WIDTH SPACE is deliberately absent
+# (White_Space=No) and is handled by the invisible-format strip instead.
+# Index-walks under LC_ALL=C and slices the prefix once so the cost stays
+# linear in the leading run. Sets FM_UNTRUSTED_WS_LEAD.
 fm_untrusted_ws_lead() {
-  local text=$1 out="" ws
-  while [ -n "$text" ]; do
-    for ws in "${FM_UNTRUSTED_WS_SCALARS[@]}"; do
-      case "$text" in
-        "$ws"*)
-          out="${out}${ws}"
-          text=${text#"$ws"}
-          continue 2
-          ;;
-      esac
-    done
-    break
+  local text=$1
+  local LC_ALL=C
+  local byte_len=${#text} i=0 b win
+  while [ "$i" -lt "$byte_len" ]; do
+    b=${text:i:1}
+    case "$b" in
+      ' '|$'\t'|$'\v'|$'\f'|$'\r')
+        i=$((i + 1))
+        continue
+        ;;
+      $'\xC2')
+        win=${text:i:2}
+        case "$win" in
+          $'\xC2\x85'|$'\xC2\xA0')
+            i=$((i + 2))
+            continue
+            ;;
+        esac
+        break
+        ;;
+      $'\xE1'|$'\xE2'|$'\xE3')
+        win=${text:i:3}
+        case "$win" in
+          $'\xE1\x9A\x80' \
+            |$'\xE2\x80\x80'|$'\xE2\x80\x81'|$'\xE2\x80\x82'|$'\xE2\x80\x83' \
+            |$'\xE2\x80\x84'|$'\xE2\x80\x85'|$'\xE2\x80\x86'|$'\xE2\x80\x87' \
+            |$'\xE2\x80\x88'|$'\xE2\x80\x89'|$'\xE2\x80\x8A' \
+            |$'\xE2\x80\xA8'|$'\xE2\x80\xA9'|$'\xE2\x80\xAF'|$'\xE2\x81\x9F' \
+            |$'\xE3\x80\x80')
+            i=$((i + 3))
+            continue
+            ;;
+        esac
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
   done
-  FM_UNTRUSTED_WS_LEAD=$out
+  FM_UNTRUSTED_WS_LEAD=${text:0:$i}
 }
 
 # Neutralize consecutive line-leading system/assistant/user role markers.
