@@ -1022,7 +1022,7 @@ fmx_sanitize_mention_set_text() {
 }
 
 fmx_sanitize_mention_payload_file() {
-  local file=$1 tmp raw san item
+  local file=$1 tmp raw san item failed
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
@@ -1072,14 +1072,16 @@ fmx_sanitize_mention_payload_file() {
     return 1
   fi
   : > "$san"
+  failed=0
   while IFS= read -r -d '' item; do
     fm_sanitize_untrusted_text_var "$item"
-    printf '%s\0' "$FM_UNTRUSTED_TEXT" >> "$san" || {
-      rm -f "$tmp" "$raw" "$san"
-      return 1
-    }
+    printf '%s\0' "$FM_UNTRUSTED_TEXT" >> "$san" || { failed=1; break; }
   done < "$raw"
   rm -f "$raw"
+  if [ "$failed" -ne 0 ]; then
+    rm -f "$tmp" "$san"
+    return 1
+  fi
   # The sanitized records go back in one jq --rawfile pass that pairs them, in
   # order, with the entries whose .text is already a string; a count mismatch
   # leaves the chain untouched.
