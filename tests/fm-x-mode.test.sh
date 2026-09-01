@@ -591,6 +591,24 @@ test_poll_sanitize_preserves_nonstring_text_fields() {
   pass "fm-x-poll sanitize rewrites only existing string text fields"
 }
 
+test_poll_sanitize_preserves_trailing_newlines() {
+  local home fakebin out rc body f
+  home="$TMP_ROOT/poll-sanitize-nl"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-nl\n' > "$home/.env"
+  body='{"request_id":"req-nl","tweet_id":"16","text":"done\n\n"}'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "trailing-newline poll exit"
+  [ "$out" = "x-mention req-nl" ] || fail "trailing-newline payload must wake (got: $out)"
+  f="$home/state/x-inbox/req-nl.json"
+  assert_present "$f" "trailing-newline payload must stash"
+  [ "$(jq -r '.text | length' "$f")" = "6" ] \
+    || fail "trailing newlines were stripped from the stash: $(jq -c .text "$f")"
+  pass "fm-x-poll sanitize preserves trailing newlines in mention text"
+}
+
 # Each chain entry is rewritten with its own jq --arg so argv stays bounded.
 test_poll_sanitizes_long_reply_chain() {
   local home fakebin out rc body f i got
@@ -3148,6 +3166,7 @@ test_poll_sanitizes_untrusted_mention_strings
 test_poll_comment_only_mention_claimed_and_dismissed
 test_poll_empty_mention_dismiss_failure_still_claims
 test_poll_sanitize_preserves_nonstring_text_fields
+test_poll_sanitize_preserves_trailing_newlines
 test_poll_sanitizes_long_reply_chain
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths

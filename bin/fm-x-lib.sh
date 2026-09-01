@@ -1024,10 +1024,11 @@ fmx_sanitize_mention_payload_file() {
   command -v jq >/dev/null 2>&1 || return 1
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
 
-  item=$(jq -r 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+  item=$(jq -j 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null && printf x) || {
     rm -f "$tmp"
     return 1
   }
+  item=${item%x}
   fm_sanitize_untrusted_text_var "$item"
   # $t is the jq --arg name, not a shell expansion.
   # shellcheck disable=SC2016
@@ -1039,10 +1040,11 @@ fmx_sanitize_mention_payload_file() {
   }
 
   if jq -e '.in_reply_to | type == "object"' "$file" >/dev/null 2>&1; then
-    item=$(jq -r '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+    item=$(jq -j '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null && printf x) || {
       rm -f "$tmp"
       return 1
     }
+    item=${item%x}
     fm_sanitize_untrusted_text_var "$item"
     # $t is the jq --arg name, not a shell expansion.
     # shellcheck disable=SC2016
@@ -1057,10 +1059,11 @@ fmx_sanitize_mention_payload_file() {
   }
   i=0
   while [ "$i" -lt "$n" ]; do
-    item=$(jq -r --argjson i "$i" '.in_reply_to_chain[$i] | if type == "object" and ((.text | type) == "string") then .text else "" end' "$file" 2>/dev/null) || {
+    item=$(jq -j --argjson i "$i" '.in_reply_to_chain[$i] | if type == "object" and ((.text | type) == "string") then .text else "" end' "$file" 2>/dev/null && printf x) || {
       rm -f "$tmp"
       return 1
     }
+    item=${item%x}
     fm_sanitize_untrusted_text_var "$item"
     if ! jq --argjson i "$i" --arg t "$FM_UNTRUSTED_TEXT" \
       'if (.in_reply_to_chain | type) == "array" then
