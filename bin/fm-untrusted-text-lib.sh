@@ -87,7 +87,7 @@ fm_untrusted_utf8_prefix_bytes() {
 }
 
 fm_untrusted_strip_html_comments_var() {
-  local text=$1 prefix rest guard=0
+  local text=$1 prefix rest
   while :; do
     case "$text" in
       *'<!--'*) ;;
@@ -99,8 +99,6 @@ fm_untrusted_strip_html_comments_var() {
       *'-->'*) text="${prefix}${rest#*'-->'}" ;;
       *) text=$prefix; break ;;
     esac
-    guard=$((guard + 1))
-    [ "$guard" -lt 10000 ] || break
   done
   FM_UNTRUSTED_TEXT=$text
 }
@@ -146,7 +144,7 @@ fm_untrusted_strip_operational_prefixes_var() {
 # Neutralize consecutive line-leading system/assistant/user role markers.
 # Optional markdown heading hashes and a single bullet stay in the lead.
 fm_untrusted_neutralize_one_line() {
-  local line=$1 lead body sp rest name n prefix lowered after aftersp
+  local line=$1 lead body sp rest after aftersp
   line=${line%$'\r'}
   lead=${line%%[![:space:]]*}
   body=${line#"$lead"}
@@ -166,26 +164,33 @@ fm_untrusted_neutralize_one_line() {
   rest=$body
   body=
   while :; do
-    for name in system assistant user; do
-      n=${#name}
-      prefix=${rest:0:$n}
-      lowered=$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')
-      if [ "$lowered" = "$name" ]; then
-        after=${rest:$n}
-        aftersp=${after%%[![:space:]]*}
-        after=${after#"$aftersp"}
-        case "$after" in
-          :*)
-            after=${after#:}
-            after=${after#"${after%%[![:space:]]*}"}
-            body="${body}${FM_UNTRUSTED_ROLE_STANDIN}"
-            rest=$after
-            continue 2
-            ;;
-        esac
-      fi
-    done
-    break
+    case "$rest" in
+      [sS][yY][sS][tT][eE][mM]:*|[sS][yY][sS][tT][eE][mM][[:space:]]*)
+        after=${rest:6}
+        ;;
+      [aA][sS][sS][iI][sS][tT][aA][nN][tT]:*|[aA][sS][sS][iI][sS][tT][aA][nN][tT][[:space:]]*)
+        after=${rest:9}
+        ;;
+      [uU][sS][eE][rR]:*|[uU][sS][eE][rR][[:space:]]*)
+        after=${rest:4}
+        ;;
+      *)
+        break
+        ;;
+    esac
+    aftersp=${after%%[![:space:]]*}
+    after=${after#"$aftersp"}
+    case "$after" in
+      :*)
+        after=${after#:}
+        after=${after#"${after%%[![:space:]]*}"}
+        body="${body}${FM_UNTRUSTED_ROLE_STANDIN}"
+        rest=$after
+        ;;
+      *)
+        break
+        ;;
+    esac
   done
   FM_UNTRUSTED_LINE="${lead}${body}${rest}"
 }
@@ -240,7 +245,8 @@ fm_untrusted_truncate_var() {
 
 fm_sanitize_untrusted_text_var() {
   local text=${1-}
-  fm_untrusted_strip_html_comments_var "$text"
+  fm_untrusted_truncate_var "$text"
+  fm_untrusted_strip_html_comments_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_format_chars_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_special_tokens_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_operational_prefixes_var "$FM_UNTRUSTED_TEXT"
