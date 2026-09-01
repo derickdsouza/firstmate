@@ -246,9 +246,9 @@ fm_untrusted_truncate_var() {
 fm_sanitize_untrusted_text_var() {
   local text=${1-}
   fm_untrusted_truncate_var "$text"
-  fm_untrusted_strip_html_comments_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_format_chars_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_special_tokens_var "$FM_UNTRUSTED_TEXT"
+  fm_untrusted_strip_html_comments_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_strip_operational_prefixes_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_neutralize_role_lines_var "$FM_UNTRUSTED_TEXT"
   fm_untrusted_truncate_var "$FM_UNTRUSTED_TEXT"
