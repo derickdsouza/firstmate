@@ -46,6 +46,21 @@ FM_UNTRUSTED_TEXT_SUFFIX=' [truncated]'
 FM_UNTRUSTED_ROLE_STANDIN='[role] '
 FM_UNTRUSTED_OP_STANDIN='[op] '
 
+# Every code point Unicode gives White_Space=Yes outside ASCII, as UTF-8 byte
+# sequences (the same list and reason as bin/fm-composer-lib.sh, issue #1988):
+# classification must not depend on the ambient locale because the daemon runs
+# this transform under LC_ALL=C, where [[:space:]] misses these. U+200B ZERO
+# WIDTH SPACE is deliberately absent (White_Space=No); the invisible-format
+# strip owns it.
+FM_UNTRUSTED_WS_SEQS=(
+  $'\xC2\x85' $'\xC2\xA0' $'\xE1\x9A\x80'
+  $'\xE2\x80\x80' $'\xE2\x80\x81' $'\xE2\x80\x82' $'\xE2\x80\x83'
+  $'\xE2\x80\x84' $'\xE2\x80\x85' $'\xE2\x80\x86' $'\xE2\x80\x87'
+  $'\xE2\x80\x88' $'\xE2\x80\x89' $'\xE2\x80\x8A'
+  $'\xE2\x80\xA8' $'\xE2\x80\xA9' $'\xE2\x80\xAF' $'\xE2\x81\x9F'
+  $'\xE3\x80\x80'
+)
+
 _FM_UNTRUSTED_TEXT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${FM_OPERATIONAL_PREFIX+x}" ]; then
   # shellcheck source=bin/fm-operational-input.sh
@@ -53,19 +68,50 @@ if [ -z "${FM_OPERATIONAL_PREFIX+x}" ]; then
 fi
 
 # Byte length of the first `max` Unicode scalars in `text`.
-# Walks UTF-8 under LC_ALL=C so ${#} and ${var:n:m} stay byte-indexed.
-# Incomplete trailing sequences are omitted rather than emitted as invalid UTF-8.
+# Runs under LC_ALL=C so ${#} and ${var:n:m} stay byte-indexed. A prefix's
+# scalar count is its bytes minus UTF-8 continuation bytes, which one pattern
+# pass computes at C speed, so the cut is found by binary search instead of a
+# per-scalar interpreted walk; the cut then lands on a complete scalar and an
+# incomplete trailing sequence is dropped rather than emitted as invalid UTF-8.
 # Sets FM_UNTRUSTED_UTF8_BYTES.
 fm_untrusted_utf8_prefix_bytes() {
   local text=$1 max=$2
   local LC_ALL=C
-  local i=0 byte_len=${#text} count=0 rem seq ord b
-  while [ "$count" -lt "$max" ] && [ "$i" -lt "$byte_len" ]; do
-    rem=$((byte_len - i))
-    b=${text:i:1}
-    # printf -v is a builtin; a command substitution here forks once per scalar
-    # and can blow the 30s fm-x-poll timeout on over-cap C-locale input.
-    printf -v ord '%d' "'$b"
+  local byte_len=${#text} lo hi mid scalars b j back ord seq
+  local cont_lo=$'\x80' cont_hi=$'\xBF'
+  if [ "$byte_len" -le "$max" ]; then
+    FM_UNTRUSTED_UTF8_BYTES=$byte_len
+    return 0
+  fi
+  lo=0
+  hi=$byte_len
+  while [ "$lo" -lt "$hi" ]; do
+    mid=$(((lo + hi) / 2))
+    scalars=${text:0:mid}
+    scalars=${scalars//[$cont_lo-$cont_hi]/}
+    if [ "${#scalars}" -ge "$max" ]; then
+      hi=$mid
+    else
+      lo=$((mid + 1))
+    fi
+  done
+  b=$lo
+  while [ "$b" -lt "$byte_len" ]; do
+    case "${text:b:1}" in
+      [$cont_lo-$cont_hi]) b=$((b + 1)) ;;
+      *) break ;;
+    esac
+  done
+  j=$b
+  back=0
+  while [ "$back" -lt 4 ] && [ "$j" -gt 0 ]; do
+    case "${text:$((j - 1)):1}" in
+      [$cont_lo-$cont_hi]) j=$((j - 1)); back=$((back + 1)) ;;
+      *) break ;;
+    esac
+  done
+  if [ "$j" -gt 0 ]; then
+    printf -v ord '%d' "'${text:$((j - 1)):1}"
     if [ "$ord" -lt 128 ]; then
       seq=1
     elif [ "$ord" -ge 194 ] && [ "$ord" -le 223 ]; then
@@ -77,13 +123,11 @@ fm_untrusted_utf8_prefix_bytes() {
     else
       seq=1
     fi
-    if [ "$seq" -gt "$rem" ]; then
-      break
+    if [ $((j - 1 + seq)) -gt "$b" ]; then
+      b=$((j - 1))
     fi
-    i=$((i + seq))
-    count=$((count + 1))
-  done
-  FM_UNTRUSTED_UTF8_BYTES=$i
+  fi
+  FM_UNTRUSTED_UTF8_BYTES=$b
 }
 
 fm_untrusted_strip_html_comments_var() {
@@ -143,67 +187,50 @@ fm_untrusted_strip_operational_prefixes_var() {
 
 # Longest prefix of $1 made of whitespace, matched byte-exactly against the
 # POSIX [[:space:]] ASCII set plus every code point Unicode gives
-# White_Space=Yes outside ASCII, so classification never depends on the
-# ambient locale (the daemon runs under LC_ALL=C, where [[:space:]] misses
-# U+3000 and friends; the same list and reason as bin/fm-composer-lib.sh,
-# issue #1988). U+200B ZERO WIDTH SPACE is deliberately absent
-# (White_Space=No) and is handled by the invisible-format strip instead.
-# Index-walks under LC_ALL=C and slices the prefix once so the cost stays
-# linear in the leading run. Sets FM_UNTRUSTED_WS_LEAD.
+# White_Space=Yes outside ASCII (FM_UNTRUSTED_WS_SEQS), so classification
+# never depends on the ambient locale. Maps the non-ASCII sequences to spaces
+# for the match, then maps the run's scalar count back to original bytes
+# through fm_untrusted_utf8_prefix_bytes, so no per-scalar interpreted walk
+# runs on cap-length whitespace runs. Sets FM_UNTRUSTED_WS_LEAD to the prefix
+# and FM_UNTRUSTED_WS_LEAD_LEN to its byte length.
 fm_untrusted_ws_lead() {
-  local text=$1
+  local text=$1 norm seq n
   local LC_ALL=C
-  local byte_len=${#text} i=0 b win
-  while [ "$i" -lt "$byte_len" ]; do
-    b=${text:i:1}
-    case "$b" in
-      ' '|$'\t'|$'\v'|$'\f'|$'\r')
-        i=$((i + 1))
-        continue
-        ;;
-      $'\xC2')
-        win=${text:i:2}
-        case "$win" in
-          $'\xC2\x85'|$'\xC2\xA0')
-            i=$((i + 2))
-            continue
-            ;;
-        esac
-        break
-        ;;
-      $'\xE1'|$'\xE2'|$'\xE3')
-        win=${text:i:3}
-        case "$win" in
-          $'\xE1\x9A\x80' \
-            |$'\xE2\x80\x80'|$'\xE2\x80\x81'|$'\xE2\x80\x82'|$'\xE2\x80\x83' \
-            |$'\xE2\x80\x84'|$'\xE2\x80\x85'|$'\xE2\x80\x86'|$'\xE2\x80\x87' \
-            |$'\xE2\x80\x88'|$'\xE2\x80\x89'|$'\xE2\x80\x8A' \
-            |$'\xE2\x80\xA8'|$'\xE2\x80\xA9'|$'\xE2\x80\xAF'|$'\xE2\x81\x9F' \
-            |$'\xE3\x80\x80')
-            i=$((i + 3))
-            continue
-            ;;
-        esac
-        break
-        ;;
-      *)
-        break
-        ;;
-    esac
+  case "${text:0:1}" in
+    ' '|$'\t'|$'\v'|$'\f'|$'\r'|$'\xC2'|$'\xE1'|$'\xE2'|$'\xE3') ;;
+    *)
+      FM_UNTRUSTED_WS_LEAD=
+      FM_UNTRUSTED_WS_LEAD_LEN=0
+      return 0
+      ;;
+  esac
+  norm=$text
+  for seq in "${FM_UNTRUSTED_WS_SEQS[@]}"; do
+    norm=${norm//"$seq"/ }
   done
-  FM_UNTRUSTED_WS_LEAD=${text:0:$i}
+  norm=${norm%%[![:space:]]*}
+  n=${#norm}
+  if [ "$n" -eq 0 ]; then
+    FM_UNTRUSTED_WS_LEAD=
+    FM_UNTRUSTED_WS_LEAD_LEN=0
+    return 0
+  fi
+  fm_untrusted_utf8_prefix_bytes "$text" "$n"
+  FM_UNTRUSTED_WS_LEAD_LEN=$FM_UNTRUSTED_UTF8_BYTES
+  FM_UNTRUSTED_WS_LEAD=${text:0:$FM_UNTRUSTED_WS_LEAD_LEN}
 }
 
 # Neutralize consecutive line-leading system/assistant/user role markers.
 # Optional markdown heading hashes and a single bullet stay in the lead.
 fm_untrusted_neutralize_one_line() {
   local line=$1 lead body sp rest after
+  local LC_ALL=C
   while [ "${line%$'\r'}" != "$line" ]; do
     line=${line%$'\r'}
   done
   fm_untrusted_ws_lead "$line"
   lead=$FM_UNTRUSTED_WS_LEAD
-  body=${line#"$lead"}
+  body=${line:$FM_UNTRUSTED_WS_LEAD_LEN}
   while [ "${body#"#"}" != "$body" ]; do
     lead="${lead}#"
     body=${body#"#"}
@@ -211,7 +238,7 @@ fm_untrusted_neutralize_one_line() {
   fm_untrusted_ws_lead "$body"
   sp=$FM_UNTRUSTED_WS_LEAD
   lead="${lead}${sp}"
-  body=${body#"$sp"}
+  body=${body:$FM_UNTRUSTED_WS_LEAD_LEN}
   case "$body" in
     '- '*|'* '*|'+ '*)
       lead="${lead}${body:0:2}"
@@ -236,12 +263,12 @@ fm_untrusted_neutralize_one_line() {
         ;;
     esac
     fm_untrusted_ws_lead "$after"
-    after=${after#"$FM_UNTRUSTED_WS_LEAD"}
+    after=${after:$FM_UNTRUSTED_WS_LEAD_LEN}
     case "$after" in
       :*)
         after=${after#:}
         fm_untrusted_ws_lead "$after"
-        after=${after#"$FM_UNTRUSTED_WS_LEAD"}
+        after=${after:$FM_UNTRUSTED_WS_LEAD_LEN}
         body="${body}${FM_UNTRUSTED_ROLE_STANDIN}"
         rest=$after
         ;;

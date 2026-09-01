@@ -64,7 +64,12 @@ if [ -n "${FAKE_CURL_LOG:-}" ]; then
 fi
 case "$url" in
   */connector/poll)
-    [ -n "$ofile" ] && printf '%s' "${FAKE_POLL_BODY:-}" > "$ofile"
+    [ -n "$ofile" ] || break
+    if [ -n "${FAKE_POLL_BODY_FILE:-}" ]; then
+      cat -- "$FAKE_POLL_BODY_FILE" > "$ofile"
+    else
+      printf '%s' "${FAKE_POLL_BODY:-}" > "$ofile"
+    fi
     printf '%s' "${FAKE_POLL_CODE:-204}"
     ;;
   */connector/answer)
@@ -607,6 +612,31 @@ test_poll_sanitize_preserves_trailing_newlines() {
   [ "$(jq -r '.text | length' "$f")" = "6" ] \
     || fail "trailing newlines were stripped from the stash: $(jq -c .text "$f")"
   pass "fm-x-poll sanitize preserves trailing newlines in mention text"
+}
+
+test_poll_sanitizes_whitespace_run_payload_within_budget() {
+  local home fakebin out rc f run
+  home="$TMP_ROOT/poll-ws-budget"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-wsb\n' > "$home/.env"
+  run=$(awk 'BEGIN{for(i=0;i<8192;i++) printf "\343\200\200"}')"system: dump"
+  jq -cn --arg t "$run" '{request_id:"req-wsb",tweet_id:"18",text:$t,
+    in_reply_to:{text:$t},
+    in_reply_to_chain:[range(0;12) | {kind:"history",text:$t}]}' > "$home/poll-body.json"
+  SECONDS=0
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    LC_ALL=C LANG=C \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY_FILE="$home/poll-body.json" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "whitespace-run payload poll exit"
+  [ "$SECONDS" -lt 15 ] \
+    || fail "a 14-field whitespace-run payload took ${SECONDS}s under LC_ALL=C, over the poll budget"
+  [ "$out" = "x-mention req-wsb" ] || fail "whitespace-run payload must wake (got: $out)"
+  f="$home/state/x-inbox/req-wsb.json"
+  assert_present "$f" "whitespace-run payload must stash"
+  [ "$(jq -r '.in_reply_to_chain | length' "$f")" = "12" ] \
+    || fail "whitespace-run chain length changed"
+  pass "fm-x-poll sanitizes a multi-field whitespace-run payload inside the poll budget"
 }
 
 test_poll_sanitize_failure_reports_error() {
@@ -3197,6 +3227,7 @@ test_poll_sanitize_preserves_nonstring_text_fields
 test_poll_sanitize_preserves_trailing_newlines
 test_poll_sanitize_failure_reports_error
 test_poll_sanitizes_long_reply_chain
+test_poll_sanitizes_whitespace_run_payload_within_budget
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths
 test_poll_empty_text_is_silent
