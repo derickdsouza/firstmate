@@ -12,7 +12,7 @@
 #   HTTP 204                                      -> print nothing, exit 0 (no wake)
 #   empty / missing / sanitized-to-empty text    -> claim the offer marker and
 #       dismiss the request at the relay so it is never re-offered; no stash,
-#       no wake (a dismiss failure prints one rate-limited diagnostic)
+#       no wake (a claim or dismiss failure prints one rate-limited diagnostic)
 #   auth/config errors                           -> print one rate-limited diagnostic
 #   a newly offered mention with non-empty text -> sanitize agent-facing
 #       strings, stash the object to state/x-inbox/<request_id>.json, record
