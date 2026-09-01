@@ -1010,8 +1010,11 @@ fmx_meta_link_clear() {
 # fm_sanitize_untrusted_text_var. Top-level .text, .in_reply_to.text, and each
 # .in_reply_to_chain[].text are sanitized when they are strings; every other
 # field is left intact. bin/fm-untrusted-text-lib.sh owns the transform.
-# Each field is written back with its own bounded jq --arg so a long chain
-# cannot grow argv past E2BIG.
+# The two single fields are written back through their own jq --arg; the whole
+# reply chain is sanitized in one batched pass whose texts flow between jq and
+# the shell through NUL-delimited temp files and one jq --rawfile, so the cost
+# scales with total string size instead of chain entry count and argv stays
+# bounded no matter how long the chain grows.
 fmx_sanitize_mention_set_text() {
   local file=$1 tmp=$2 filter=$3 text=$4
   jq --arg t "$text" "$filter" "$file" > "$tmp" || return 1
@@ -1019,7 +1022,7 @@ fmx_sanitize_mention_set_text() {
 }
 
 fmx_sanitize_mention_payload_file() {
-  local file=$1 tmp n i item
+  local file=$1 tmp raw san item
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
@@ -1053,26 +1056,51 @@ fmx_sanitize_mention_payload_file() {
       "$FM_UNTRUSTED_TEXT" || { rm -f "$tmp"; return 1; }
   fi
 
-  n=$(jq -r '.in_reply_to_chain | if type == "array" then length else 0 end' "$file" 2>/dev/null) || {
-    rm -f "$tmp"
+  # Chain texts are extracted in one pass, each record followed by a NUL so
+  # embedded newlines stay inside their record; embedded NULs are dropped by
+  # the same jq pass, matching what shell string handling could never carry.
+  raw=$(mktemp "${TMPDIR:-/tmp}/fm-x-chain.XXXXXX") || { rm -f "$tmp"; return 1; }
+  san=$(mktemp "${TMPDIR:-/tmp}/fm-x-chain.XXXXXX") || { rm -f "$tmp" "$raw"; return 1; }
+  if ! jq -j '
+    .in_reply_to_chain
+    | (if type == "array" then .[] else empty end)
+    | (if type == "object" and ((.text | type) == "string")
+       then ((.text | gsub("\u0000"; "")) + "\u0000")
+       else empty end)
+  ' "$file" > "$raw" 2>/dev/null; then
+    rm -f "$tmp" "$raw" "$san"
     return 1
-  }
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    item=$(jq -j --argjson i "$i" '.in_reply_to_chain[$i] | if type == "object" and ((.text | type) == "string") then .text else "" end' "$file" 2>/dev/null && printf x) || {
-      rm -f "$tmp"
+  fi
+  : > "$san"
+  while IFS= read -r -d '' item; do
+    fm_sanitize_untrusted_text_var "$item"
+    printf '%s\0' "$FM_UNTRUSTED_TEXT" >> "$san" || {
+      rm -f "$tmp" "$raw" "$san"
       return 1
     }
-    item=${item%x}
-    fm_sanitize_untrusted_text_var "$item"
-    if ! jq --argjson i "$i" --arg t "$FM_UNTRUSTED_TEXT" \
-      'if (.in_reply_to_chain | type) == "array" then
-         .in_reply_to_chain[$i] |= (if type == "object" and (.text | type) == "string" then .text = $t else . end)
-       else . end' "$file" > "$tmp"; then
-      rm -f "$tmp"
+  done < "$raw"
+  rm -f "$raw"
+  # The sanitized records go back in one jq --rawfile pass that pairs them, in
+  # order, with the entries whose .text is already a string; a count mismatch
+  # leaves the chain untouched.
+  if [ -s "$san" ]; then
+    if ! jq --rawfile san "$san" '
+      ($san | split("\u0000")) as $all
+      | ($all | if (length > 0) and (.[-1] == "") then .[0:(length - 1)] else . end) as $texts
+      | [ .in_reply_to_chain
+          | (if type == "array" then to_entries[] else empty end)
+          | select((.value | type) == "object" and ((.value.text | type) == "string"))
+          | .key ] as $keys
+      | if (($keys | length) == ($texts | length)) and (($keys | length) > 0) then
+          reduce range(0; ($keys | length)) as $i (.;
+            .in_reply_to_chain[$keys[$i]] |=
+              (if type == "object" and ((.text | type) == "string") then .text = $texts[$i] else . end))
+        else . end
+    ' "$file" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp" "$san"
       return 1
     fi
-    mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
-    i=$((i + 1))
-  done
+    mv -f "$tmp" "$file" || { rm -f "$tmp" "$san"; return 1; }
+  fi
+  rm -f "$san"
 }

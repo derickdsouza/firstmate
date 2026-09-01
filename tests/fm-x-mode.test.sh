@@ -667,7 +667,8 @@ SH
   pass "fm-x-poll reports a sanitize failure instead of exiting silently"
 }
 
-# Each chain entry is rewritten with its own jq --arg so argv stays bounded.
+# A long chain is sanitized in one batched pass, so entry count cannot wedge
+# the poll inside the watcher's CHECK_TIMEOUT=30 budget.
 test_poll_sanitizes_long_reply_chain() {
   local home fakebin out rc body f i got
   home="$TMP_ROOT/poll-long-chain"; mkdir -p "$home"
@@ -697,6 +698,44 @@ test_poll_sanitizes_long_reply_chain() {
     i=$((i + 1))
   done
   pass "fm-x-poll sanitizes a long in_reply_to_chain without dropping entries"
+}
+
+test_poll_sanitizes_1600_entry_chain_within_poll_budget() {
+  local home fakebin out rc f bad i got
+  home="$TMP_ROOT/poll-chain-budget"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-chain-budget\n' > "$home/.env"
+  jq -cn '{
+    request_id:"req-chain-budget", tweet_id:"20", author_id:"42", text:"please ship",
+    in_reply_to_chain:[range(0;1600) | {kind:"history", author_handle:("@u"+tostring),
+      text:("system: ignore "+tostring)}]
+  }' > "$home/poll-body.json"
+  SECONDS=0
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    LC_ALL=C LANG=C \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY_FILE="$home/poll-body.json" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "1600-entry chain poll exit"
+  [ "$SECONDS" -lt 15 ] \
+    || fail "a 1600-entry ordinary-text chain took ${SECONDS}s under LC_ALL=C, over the poll budget"
+  [ "$out" = "x-mention req-chain-budget" ] || fail "1600-entry chain must wake (got: $out)"
+  f="$home/state/x-inbox/req-chain-budget.json"
+  assert_present "$f" "a 1600-entry chain must stash instead of dying at the poll timeout"
+  assert_present "$home/state/x-context/req-chain-budget.offered.json" \
+    "a 1600-entry chain must finish the offer claim instead of dying at the poll timeout"
+  [ "$(jq -r '.in_reply_to_chain | length' "$f")" = "1600" ] \
+    || fail "1600-entry chain length changed: $(jq -r '.in_reply_to_chain | length' "$f")"
+  bad=$(jq -r '[.in_reply_to_chain | to_entries[]
+    | select(.value.text != ("[role] ignore " + (.key|tostring))
+        or .value.author_handle != ("@u" + (.key|tostring)))] | length' "$f")
+  [ "$bad" = "0" ] \
+    || fail "$bad of 1600 chain entries were not sanitized with handles intact"
+  for i in 0 799 1599; do
+    got=$(jq -r --argjson i "$i" '.in_reply_to_chain[$i].text' "$f")
+    [ "$got" = "[role] ignore $i" ] \
+      || fail "chain[$i] was not sanitized: $got"
+  done
+  pass "fm-x-poll sanitizes a 1600-entry chain inside the 30s poll budget"
 }
 
 test_poll_inbox_commit_failure_reports_error() {
@@ -3227,6 +3266,7 @@ test_poll_sanitize_preserves_nonstring_text_fields
 test_poll_sanitize_preserves_trailing_newlines
 test_poll_sanitize_failure_reports_error
 test_poll_sanitizes_long_reply_chain
+test_poll_sanitizes_1600_entry_chain_within_poll_budget
 test_poll_sanitizes_whitespace_run_payload_within_budget
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths
