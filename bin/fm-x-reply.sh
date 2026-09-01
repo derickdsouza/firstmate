@@ -338,6 +338,9 @@ if [ -n "$FMX_DRY" ]; then
     printf '%s' "$CHUNKS" | jq -r '.[]' | while IFS= read -r __chunk; do printf '  %s\n' "$__chunk" >&2; done
   fi
   write_reply_receipt "$N" 1
+  if [ "$FOLLOWUP" = 0 ]; then
+    fmx_inbox_ack_mark "$STATE" "$REQ" 2>/dev/null || true
+  fi
   printf '%s\n' "$REQ"
   exit 0
 fi
@@ -362,6 +365,8 @@ case "$code" in
     if [ "$FOLLOWUP" = 0 ]; then
       fmx_context_registry_set "$STATE" "$REQ" "$REQ_PLATFORM" "$REQ_EXPLICIT_MAX" 1 2>/dev/null \
         || echo "fm-x-reply: warning: could not retain reply context for $REQ" >&2
+      fmx_inbox_ack_mark "$STATE" "$REQ" 2>/dev/null \
+        || echo "fm-x-reply: warning: could not record relay ack marker for $REQ" >&2
     fi
     write_reply_receipt "$N" 0
     printf '%s\n' "$REQ"
