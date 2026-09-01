@@ -145,7 +145,9 @@ fm_untrusted_strip_operational_prefixes_var() {
 # Optional markdown heading hashes and a single bullet stay in the lead.
 fm_untrusted_neutralize_one_line() {
   local line=$1 lead body sp rest after aftersp
-  line=${line%$'\r'}
+  while [ "${line%$'\r'}" != "$line" ]; do
+    line=${line%$'\r'}
+  done
   lead=${line%%[![:space:]]*}
   body=${line#"$lead"}
   while [ "${body#"#"}" != "$body" ]; do
@@ -208,6 +210,9 @@ fm_untrusted_neutralize_role_lines_var() {
       out="${out}"$'\n'"${FM_UNTRUSTED_LINE}"
     fi
   done < <(printf '%s' "$text")
+  case "$text" in
+    *$'\n') out="${out}"$'\n' ;;
+  esac
   FM_UNTRUSTED_TEXT=$out
 }
 

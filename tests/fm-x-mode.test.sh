@@ -563,6 +563,34 @@ test_poll_empty_mention_dismiss_failure_still_claims() {
   pass "fm-x-poll still claims locally when an empty-mention dismiss fails"
 }
 
+test_poll_sanitize_preserves_nonstring_text_fields() {
+  local home fakebin out rc body f
+  home="$TMP_ROOT/poll-sanitize-shape"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-shape\n' > "$home/.env"
+  body=$(jq -cn '{request_id:"req-shape",tweet_id:"14",text:"please ship",
+    in_reply_to:{author_handle:"@asker"},
+    in_reply_to_chain:[{author_handle:"@u",kind:"history"},{unavailable:true},{text:123}]}')
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "shape-preserving poll exit"
+  [ "$out" = "x-mention req-shape" ] || fail "shape payload must still wake (got: $out)"
+  f="$home/state/x-inbox/req-shape.json"
+  assert_present "$f" "shape payload must stash"
+  [ "$(jq -r '.in_reply_to | has("text")' "$f")" = "false" ] \
+    || fail "in_reply_to gained a text field it never had"
+  [ "$(jq -r '.in_reply_to_chain[0] | has("text")' "$f")" = "false" ] \
+    || fail "a textless chain entry gained a text field"
+  [ "$(jq -r '.in_reply_to_chain[1] | has("text")' "$f")" = "false" ] \
+    || fail "a gap chain entry gained a text field"
+  [ "$(jq -r '.in_reply_to_chain[1].unavailable' "$f")" = "true" ] \
+    || fail "a gap chain entry lost its unavailable marker"
+  [ "$(jq -r '.in_reply_to_chain[2].text' "$f")" = "123" ] \
+    || fail "a non-string text value was clobbered: $(jq -c '.in_reply_to_chain[2]' "$f")"
+  pass "fm-x-poll sanitize rewrites only existing string text fields"
+}
+
 # Each chain entry is rewritten with its own jq --arg so argv stays bounded.
 test_poll_sanitizes_long_reply_chain() {
   local home fakebin out rc body f i got
@@ -3119,6 +3147,7 @@ test_poll_preserves_inbound_attachment_urls
 test_poll_sanitizes_untrusted_mention_strings
 test_poll_comment_only_mention_claimed_and_dismissed
 test_poll_empty_mention_dismiss_failure_still_claims
+test_poll_sanitize_preserves_nonstring_text_fields
 test_poll_sanitizes_long_reply_chain
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths
