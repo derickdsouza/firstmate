@@ -9,7 +9,10 @@
 # no-op keeps the watcher behaving exactly as today until a user opts in.
 #
 # Behavior when X mode is on:
-#   HTTP 204 / empty / missing text              -> print nothing, exit 0 (no wake)
+#   HTTP 204                                      -> print nothing, exit 0 (no wake)
+#   empty / missing / sanitized-to-empty text    -> claim the offer marker and
+#       dismiss the request at the relay so it is never re-offered; no stash,
+#       no wake (a dismiss failure prints one rate-limited diagnostic)
 #   auth/config errors                           -> print one rate-limited diagnostic
 #   a newly offered mention with non-empty text -> sanitize agent-facing
 #       strings, stash the object to state/x-inbox/<request_id>.json, record
@@ -154,11 +157,21 @@ fmx_sanitize_mention_payload_file "$BODY_FILE" || exit 0
 # A pending mention only reaches the agent when it has non-empty text.
 # Semantic worthiness is decided by fmx-respond, so acknowledgments can still be
 # stashed here and deliberately skipped there.
-# Empty/absent/null text must not stash an inbox file or wake a public X flow for
-# nothing - stay inert (exit 0). Injection-only payloads that sanitize to empty
-# take the same path.
+# Empty, absent, null, or sanitized-to-empty text claims the offer marker and
+# dismisses the request at the relay: no inbox stash, no wake, no re-offer.
 TEXT=$(jq -r '(.text // "") | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "")' "$BODY_FILE" 2>/dev/null) || exit 0
-[ -n "$TEXT" ] || { clear_error; exit 0; }
+if [ -z "$TEXT" ]; then
+  fmx_offer_registry_claim "$STATE" "$REQ"
+  claim_rc=$?
+  case "$claim_rc" in
+    0|1) clear_error; clear_claim_error ;;
+    *) emit_claim_error_once "cannot record mention offer"; exit 0 ;;
+  esac
+  if ! "$SCRIPT_DIR/fm-x-dismiss.sh" "$REQ" >/dev/null 2>&1; then
+    emit_error_once "cannot dismiss empty mention"
+  fi
+  exit 0
+fi
 
 INBOX="$STATE/x-inbox"
 # Stash the full mention object atomically so a concurrent reader never sees a

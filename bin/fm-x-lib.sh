@@ -1067,7 +1067,7 @@ fmx_sanitize_mention_payload_file() {
       rm -f "$tmp"
       return 1
     fi
-    mv -f "$tmp" "$file" || return 1
+    mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     i=$((i + 1))
   done
 }
