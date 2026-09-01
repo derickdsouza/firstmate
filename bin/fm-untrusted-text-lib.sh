@@ -63,7 +63,9 @@ fm_untrusted_utf8_prefix_bytes() {
   while [ "$count" -lt "$max" ] && [ "$i" -lt "$byte_len" ]; do
     rem=$((byte_len - i))
     b=${text:i:1}
-    ord=$(printf '%d' "'$b")
+    # printf -v is a builtin; a command substitution here forks once per scalar
+    # and can blow the 30s fm-x-poll timeout on over-cap C-locale input.
+    printf -v ord '%d' "'$b"
     if [ "$ord" -lt 128 ]; then
       seq=1
     elif [ "$ord" -ge 194 ] && [ "$ord" -le 223 ]; then

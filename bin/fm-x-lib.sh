@@ -1010,30 +1010,45 @@ fmx_meta_link_clear() {
 # fm_sanitize_untrusted_text_var. Top-level .text, .in_reply_to.text, and each
 # .in_reply_to_chain[].text are sanitized when they are strings; every other
 # field is left intact. bin/fm-untrusted-text-lib.sh owns the transform.
+# Each field is written back with its own bounded jq --arg so a long chain
+# cannot grow argv past E2BIG.
+fmx_sanitize_mention_set_text() {
+  local file=$1 tmp=$2 filter=$3 text=$4
+  jq --arg t "$text" "$filter" "$file" > "$tmp" || return 1
+  mv -f "$tmp" "$file"
+}
+
 fmx_sanitize_mention_payload_file() {
-  local file=$1 tmp chain_json n i item text irt irt_present=0
+  local file=$1 tmp n i item
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
 
-  text=$(jq -r 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+  item=$(jq -r 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
     rm -f "$tmp"
     return 1
   }
-  fm_sanitize_untrusted_text_var "$text"
-  text=$FM_UNTRUSTED_TEXT
+  fm_sanitize_untrusted_text_var "$item"
+  # $t is the jq --arg name, not a shell expansion.
+  # shellcheck disable=SC2016
+  fmx_sanitize_mention_set_text "$file" "$tmp" '.text = $t' "$FM_UNTRUSTED_TEXT" || {
+    rm -f "$tmp"
+    return 1
+  }
 
   if jq -e '.in_reply_to | type == "object"' "$file" >/dev/null 2>&1; then
-    irt_present=1
-    irt=$(jq -r '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
+    item=$(jq -r '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null) || {
       rm -f "$tmp"
       return 1
     }
-    fm_sanitize_untrusted_text_var "$irt"
-    irt=$FM_UNTRUSTED_TEXT
+    fm_sanitize_untrusted_text_var "$item"
+    # $t is the jq --arg name, not a shell expansion.
+    # shellcheck disable=SC2016
+    fmx_sanitize_mention_set_text "$file" "$tmp" \
+      'if .in_reply_to | type == "object" then .in_reply_to.text = $t else . end' \
+      "$FM_UNTRUSTED_TEXT" || { rm -f "$tmp"; return 1; }
   fi
 
-  chain_json='[]'
   n=$(jq -r '.in_reply_to_chain | if type == "array" then length else 0 end' "$file" 2>/dev/null) || {
     rm -f "$tmp"
     return 1
@@ -1045,41 +1060,14 @@ fmx_sanitize_mention_payload_file() {
       return 1
     }
     fm_sanitize_untrusted_text_var "$item"
-    chain_json=$(jq -n --argjson c "$chain_json" --arg t "$FM_UNTRUSTED_TEXT" '$c + [$t]') || {
+    if ! jq --argjson i "$i" --arg t "$FM_UNTRUSTED_TEXT" \
+      'if (.in_reply_to_chain | type) == "array" then
+         .in_reply_to_chain[$i] |= (if type == "object" then .text = $t else . end)
+       else . end' "$file" > "$tmp"; then
       rm -f "$tmp"
       return 1
-    }
+    fi
+    mv -f "$tmp" "$file" || return 1
     i=$((i + 1))
   done
-
-  if [ "$irt_present" -eq 1 ]; then
-    jq --arg t "$text" --arg irt "$irt" --argjson chain "$chain_json" '
-      .text = $t
-      | if .in_reply_to | type == "object" then .in_reply_to.text = $irt else . end
-      | if (.in_reply_to_chain | type == "array") and ($chain | type == "array") then
-          .in_reply_to_chain = [
-            range(0; (.in_reply_to_chain | length)) as $i
-            | .in_reply_to_chain[$i]
-            | if type == "object" then .text = ($chain[$i] // .text) else . end
-          ]
-        else .
-        end
-    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
-  else
-    jq --arg t "$text" --argjson chain "$chain_json" '
-      .text = $t
-      | if (.in_reply_to_chain | type == "array") and ($chain | type == "array") then
-          .in_reply_to_chain = [
-            range(0; (.in_reply_to_chain | length)) as $i
-            | .in_reply_to_chain[$i]
-            | if type == "object" then .text = ($chain[$i] // .text) else . end
-          ]
-        else .
-        end
-    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
-  fi
-  if ! mv -f "$tmp" "$file"; then
-    rm -f "$tmp"
-    return 1
-  fi
 }

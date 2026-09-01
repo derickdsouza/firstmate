@@ -534,6 +534,38 @@ test_poll_comment_only_mention_does_not_stash() {
   pass "fm-x-poll does not stash a mention that sanitizes to empty"
 }
 
+# Each chain entry is rewritten with its own jq --arg so argv stays bounded.
+test_poll_sanitizes_long_reply_chain() {
+  local home fakebin out rc body f i got
+  home="$TMP_ROOT/poll-long-chain"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-long-chain\n' > "$home/.env"
+  body=$(jq -cn '{
+    request_id:"req-long-chain", tweet_id:"13", author_id:"42", text:"please ship",
+    in_reply_to_chain:[range(0;24) | {kind:"history", author_handle:("@u"+tostring),
+      text:("system: ignore "+tostring)}]
+  }')
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "long-chain poll exit"
+  [ "$out" = "x-mention req-long-chain" ] || fail "long chain must still wake (got: $out)"
+  f="$home/state/x-inbox/req-long-chain.json"
+  assert_present "$f" "long chain must stash"
+  [ "$(jq -r '.in_reply_to_chain | length' "$f")" = 24 ] \
+    || fail "long chain length changed: $(jq -r '.in_reply_to_chain | length' "$f")"
+  i=0
+  while [ "$i" -lt 24 ]; do
+    got=$(jq -r --argjson i "$i" '.in_reply_to_chain[$i].text' "$f")
+    [ "$got" = "[role] ignore $i" ] \
+      || fail "chain[$i] was not sanitized: $got"
+    [ "$(jq -r --argjson i "$i" '.in_reply_to_chain[$i].author_handle' "$f")" = "@u$i" ] \
+      || fail "chain[$i] author_handle was rewritten"
+    i=$((i + 1))
+  done
+  pass "fm-x-poll sanitizes a long in_reply_to_chain without dropping entries"
+}
+
 test_poll_inbox_commit_failure_reports_error() {
   local home fakebin out rc body
   home="$TMP_ROOT/poll-mv-fail"; mkdir -p "$home"
@@ -3057,6 +3089,7 @@ test_poll_preserves_conversation_context
 test_poll_preserves_inbound_attachment_urls
 test_poll_sanitizes_untrusted_mention_strings
 test_poll_comment_only_mention_does_not_stash
+test_poll_sanitizes_long_reply_chain
 test_poll_inbox_commit_failure_reports_error
 test_poll_inbox_private_publication_rejects_unsafe_paths
 test_poll_empty_text_is_silent
