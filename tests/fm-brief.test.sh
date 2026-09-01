@@ -377,6 +377,8 @@ test_ship_project_memory_wording() {
     "project-memory contract lost the durable-knowledge bar"
   assert_grep "prefer a pointer to the authoritative file, command, or doc over copying the detail" "$brief" \
     "project-memory contract lost pointer-over-copy guidance"
+  assert_grep "A shared worker-facing rule file is law: never replace it with a same-named project file; put that specialization in a clearly-namespaced \`local-*\` file instead." "$brief" \
+    "project-memory contract lost the rule-file layering line"
   assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
     "project-memory contract lost the self-governance add-in-same-pass rule"
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
