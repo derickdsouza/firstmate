@@ -1,0 +1,3 @@
+promoted layering-demo-scout to ship mode=no-mistakes yolo=off (teardown protection restored)
+wrote ship instructions for mode=no-mistakes: /tmp/fm-layering-demo/home/data/layering-demo-scout/ship-instructions.md
+next: FM_HOME=/tmp/fm-layering-demo/home bin/fm-send.sh fm-layering-demo-scout "$(cat /tmp/fm-layering-demo/home/data/layering-demo-scout/ship-instructions.md)"
