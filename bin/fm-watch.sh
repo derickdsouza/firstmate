@@ -1543,16 +1543,21 @@ while :; do
   # CHECK_INTERVAL, so most cycles skip this block and fall straight through.
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
     rejected_checks=
+    x_watch_reregister_hint=
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue
       is_pr_poll=0
       if [ "$(basename "$c")" = x-watch.check.sh ]; then
-        if fmx_poll_shim_valid "$c" "$FM_HOME" "$FM_ROOT" \
-          && [ -f "$FM_ROOT/bin/fm-x-poll.sh" ] && [ ! -L "$FM_ROOT/bin/fm-x-poll.sh" ]; then
-          FM_HOME="$FM_HOME" run_check_capture "$FM_ROOT/bin/fm-x-poll.sh" || exit 1
+        x_watch_exec=
+        if x_watch_exec=$(fmx_poll_exec_target "$c" "$FM_HOME" "$FM_ROOT"); then
+          FM_HOME="$FM_HOME" run_check_capture "$x_watch_exec" || exit 1
           out=$FM_CHECK_RESULT
         else
           rejected_checks="$rejected_checks $c"
+          if ! fmx_poll_shim_stock_valid "$c" "$FM_HOME" "$FM_ROOT" \
+            && fmx_poll_shim_trust_present "$c"; then
+            x_watch_reregister_hint=$(fmx_poll_shim_reregister_hint "$c")
+          fi
           continue
         fi
       else
@@ -1603,6 +1608,9 @@ while :; do
     done
     if [ -n "$rejected_checks" ]; then
       reason="check: rejected unauthenticated state checks:$rejected_checks"
+      if [ -n "$x_watch_reregister_hint" ]; then
+        reason="$reason; $x_watch_reregister_hint"
+      fi
       fm_wake_append check unauthenticated-state-checks "$reason" || exit 1
       touch "$STATE/.last-check"
       wake "$reason"

@@ -46,6 +46,8 @@
 #                                followups to 0
 #   fmx_meta_followups_set <meta> <n> - rewrite just the follow-up counter
 #   fmx_meta_link_clear <meta> - remove the X-request link entirely
+#   fmx_poll_shim_*            - stock or registered Relay poll-shim identity;
+#                                bin/fm-x-watch-register.sh owns the binding record
 # Callers must have FM_HOME set before calling fmx_load_config.
 
 _FM_X_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -242,7 +244,7 @@ fmx_poll_shim_registration_path() {
 }
 
 # True when <file> matches a validated harbor poll-shim registration manifest.
-fmx_poll_shim_registered_valid() {
+fmx_poll_shim_manifest_valid() {
   local file=$1 home=$2 reg exec_target expected_hash actual_hash version check_id
   reg=$(fmx_poll_shim_registration_path "$home")
   [ -f "$reg" ] || return 1
@@ -267,13 +269,33 @@ fmx_poll_shim_registered_valid() {
   [ "$actual_hash" = "$expected_hash" ]
 }
 
+fmx_sha256() {
+  local file=$1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" 2>/dev/null | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+fmx_poll_shim_stock_valid() {
+  local file=$1 home=$2 root=$3
+  fmx_poll_shim_private_identity_valid "$file" || return 1
+  cmp -s "$file" <(fmx_poll_shim_content "$home" "$root")
+}
+
+# Full dispatch-time validator: stock shim, a harbor manifest registration,
+# or an explicit binding registered by bin/fm-x-watch-register.sh.
 fmx_poll_shim_valid() {
   local file=$1 home=$2 root=$3
   fmx_poll_shim_private_identity_valid "$file" || return 1
   if cmp -s "$file" <(fmx_poll_shim_content "$home" "$root"); then
     return 0
   fi
-  fmx_poll_shim_registered_valid "$file" "$home"
+  fmx_poll_shim_manifest_valid "$file" "$home" \
+    || fmx_poll_shim_registered_valid "$file" "$home" "$root"
 }
 
 # Record that the initial relay answer for <request_id> landed (answer endpoint only).
@@ -327,6 +349,104 @@ fmx_inbox_spawn_guard() {
   [ -n "$pending" ] || return 0
   echo "error: spawn refused: relay mention $pending has no Telegram ack yet; post bin/fm-x-reply.sh $pending before spawning work (fmx-respond / relay-task-offloading)" >&2
   return 1
+}
+
+# Binding record path, format, and mutation contract: bin/fm-x-watch-register.sh.
+fmx_poll_shim_trust_path() {
+  local file=$1 dir
+  [ -n "$file" ] || return 1
+  [ "$(basename -- "$file")" = x-watch.check.sh ] || return 1
+  dir=$(dirname -- "$file")
+  printf '%s/x-watch.poll-trust\n' "$dir"
+}
+
+fmx_poll_shim_trust_present() {
+  local file=$1 trust
+  trust=$(fmx_poll_shim_trust_path "$file") || return 1
+  [ -e "$trust" ] || [ -L "$trust" ]
+}
+
+fmx_poll_exec_target_path_valid() {
+  local path=$1
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$path" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  [ -n "$path" ]
+}
+
+fmx_poll_shim_trust_read() {
+  local file=$1 trust dir device version shim_hash target target_hash
+  FMX_POLL_TRUST_SHIM_HASH=
+  FMX_POLL_TRUST_TARGET=
+  FMX_POLL_TRUST_TARGET_HASH=
+  trust=$(fmx_poll_shim_trust_path "$file") || return 1
+  dir=$(dirname -- "$file")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  if [ "$(uname)" = Darwin ]; then
+    device=$(stat -f %d "$dir" 2>/dev/null) || return 1
+  else
+    device=$(stat -c %d "$dir" 2>/dev/null) || return 1
+  fi
+  fmx_single_link_file_mode_valid "$trust" 600 "$device" || return 1
+  exec 9< "$trust" || return 1
+  IFS= read -r version <&9 || { exec 9<&-; return 1; }
+  IFS= read -r shim_hash <&9 || { exec 9<&-; return 1; }
+  IFS= read -r target <&9 || { exec 9<&-; return 1; }
+  IFS= read -r target_hash <&9 || { exec 9<&-; return 1; }
+  if IFS= read -r _extra <&9; then
+    exec 9<&-
+    return 1
+  fi
+  exec 9<&-
+  [ "$version" = fm-x-watch-poll-v1 ] || return 1
+  [[ "$shim_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$target_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  fmx_poll_exec_target_path_valid "$target" || return 1
+  FMX_POLL_TRUST_SHIM_HASH=$shim_hash
+  FMX_POLL_TRUST_TARGET=$target
+  FMX_POLL_TRUST_TARGET_HASH=$target_hash
+}
+
+fmx_poll_shim_registered_valid() {
+  local file=$1 hash
+  fmx_poll_shim_private_identity_valid "$file" || return 1
+  fmx_poll_shim_trust_read "$file" || return 1
+  hash=$(fmx_sha256 "$file") || return 1
+  [ "$hash" = "$FMX_POLL_TRUST_SHIM_HASH" ] || return 1
+  [ -f "$FMX_POLL_TRUST_TARGET" ] && [ ! -L "$FMX_POLL_TRUST_TARGET" ] || return 1
+  hash=$(fmx_sha256 "$FMX_POLL_TRUST_TARGET") || return 1
+  [ "$hash" = "$FMX_POLL_TRUST_TARGET_HASH" ]
+}
+
+fmx_poll_exec_target() {
+  local file=$1 home=$2 root=$3
+  if fmx_poll_shim_stock_valid "$file" "$home" "$root" \
+    && [ -f "$root/bin/fm-x-poll.sh" ] && [ ! -L "$root/bin/fm-x-poll.sh" ]; then
+    printf '%s\n' "$root/bin/fm-x-poll.sh"
+    return 0
+  fi
+  if fmx_poll_shim_manifest_valid "$file" "$home"; then
+    jq -r '.exec_target // empty' "$(fmx_poll_shim_registration_path "$home")"
+    return 0
+  fi
+  if fmx_poll_shim_registered_valid "$file" "$home" "$root"; then
+    printf '%s\n' "$FMX_POLL_TRUST_TARGET"
+    return 0
+  fi
+  return 1
+}
+
+fmx_poll_shim_reregister_hint() {
+  local file=$1
+  if fmx_poll_shim_trust_read "$file" && [ -n "$FMX_POLL_TRUST_TARGET" ]; then
+    printf 're-register with bin/fm-x-watch-register.sh %s' "$FMX_POLL_TRUST_TARGET"
+  else
+    printf 're-register with bin/fm-x-watch-register.sh'
+  fi
 }
 
 # Resolve the X-mode settings into FMX_TOKEN, FMX_RELAY, FMX_DRY, FMX_MAX,
