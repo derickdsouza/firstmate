@@ -490,6 +490,7 @@ test_poll_preserves_inbound_attachment_urls() {
   pass "fm-x-poll preserves inbound attachment URLs for the responder"
 }
 
+
 test_poll_sanitizes_untrusted_mention_strings() {
   local home fakebin out rc body f mark
   mark=$(printf '\342\201\243')
