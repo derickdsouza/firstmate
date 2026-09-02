@@ -207,6 +207,14 @@ It does not set `commands.test` to a complete `tests/*.test.sh` walk.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the firstmate-specific local test policy and entry points.
 Portable shard evidence and coverage rules are in [fm-test-portable-shards.md](fm-test-portable-shards.md); [herdr-backend.md](herdr-backend.md#destructive-lab-safety) owns the real-Herdr lane's isolation boundary, and [runtime-backends.md](verification/runtime-backends.md#herdr) owns active evidence.
 
+The reviewer chain is global, in `~/.no-mistakes/config.yaml`, not a per-repo override.
+Set `agent: [pi, claude]`.
+No-mistakes refuses to launch a gate agent that cannot neutralize the target repo's `AGENTS.md` or `CLAUDE.md`; only pi, claude, and codex have a verified neutralization knob.
+Grok and cursor do not, so they cannot sit in the chain for this repo or any other fleet checkout that carries those files.
+Codex is the only other eligible fallback; the fleet default does not include it.
+Do not add `agent:` to the tracked `.no-mistakes.yaml` unless a repo needs a different chain than that fleet default, and then record why.
+A new firstmate home does not write that global file; apply the chain in `~/.no-mistakes/config.yaml` after installing no-mistakes, then confirm with `no-mistakes doctor` that gate validation names pi or claude rather than grok or cursor.
+
 ## Captain Preferences (data/captain.md / data/captain-shared.md)
 
 Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.

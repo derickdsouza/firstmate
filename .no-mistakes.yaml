@@ -9,6 +9,12 @@
 # HEAD-continuity guard; see docs/architecture.md "No-mistakes gate authority boundary."
 disable_project_settings: true
 
+# Reviewer chain is global (~/.no-mistakes/config.yaml agent: [pi, claude]).
+# Do not set agent: here. Grok and cursor cannot neutralize AGENTS.md/CLAUDE.md,
+# so a grok- or cursor-first global list refuses to launch in this checkout.
+# Keep the chain global so harbor and other fleet repos share it. See
+# docs/configuration.md "Gate defaults".
+
 # Trusted documentation placement policy for the Document step.
 # The audience inventory and coding guideline own the detail; keep this as a
 # pointer so gate instructions cannot become a second prose policy.
