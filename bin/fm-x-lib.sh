@@ -48,7 +48,9 @@
 #   fmx_meta_link_clear <meta> - remove the X-request link entirely
 #   fmx_poll_shim_*            - stock or registered Relay poll-shim identity;
 #                                bin/fm-x-watch-register.sh owns the binding record
-# Callers must have FM_HOME set before calling fmx_load_config.
+#   fmx_sanitize_mention_payload_file <json-file>
+#                                - rewrite agent-facing mention strings through
+#                                bin/fm-untrusted-text-lib.sh; other fields stay
 
 _FM_X_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! command -v fm_backlog_atomic_transition >/dev/null 2>&1; then
@@ -56,6 +58,10 @@ if ! command -v fm_backlog_atomic_transition >/dev/null 2>&1; then
   . "$_FM_X_LIB_DIR/fm-tasks-axi-lib.sh"
   # shellcheck source=bin/fm-backlog-transition-lib.sh
   . "$_FM_X_LIB_DIR/fm-backlog-transition-lib.sh"
+fi
+if ! command -v fm_sanitize_untrusted_text_var >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-untrusted-text-lib.sh
+  . "$_FM_X_LIB_DIR/fm-untrusted-text-lib.sh"
 fi
 
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
@@ -1205,4 +1211,105 @@ fmx_meta_link_clear() {
     rm -f "$tmp"; fm_lock_release "$lock"; return 1
   fi
   fm_lock_release "$lock"
+}
+
+# Rewrite agent-facing string fields of a stashed mention JSON file through
+# fm_sanitize_untrusted_text_var. Top-level .text, .in_reply_to.text, and each
+# .in_reply_to_chain[].text are sanitized when they are strings; every other
+# field is left intact. bin/fm-untrusted-text-lib.sh owns the transform.
+# The two single fields are written back through their own jq --arg; the whole
+# reply chain is sanitized in one batched pass whose texts flow between jq and
+# the shell through NUL-delimited temp files and one jq --rawfile, so the cost
+# scales with total string size instead of chain entry count and argv stays
+# bounded no matter how long the chain grows.
+fmx_sanitize_mention_set_text() {
+  local file=$1 tmp=$2 filter=$3 text=$4
+  jq --arg t "$text" "$filter" "$file" > "$tmp" || return 1
+  mv -f "$tmp" "$file"
+}
+
+fmx_sanitize_mention_payload_file() {
+  local file=$1 tmp raw san item failed
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-x-sanitize.XXXXXX") || return 1
+
+  item=$(jq -j 'if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null && printf x) || {
+    rm -f "$tmp"
+    return 1
+  }
+  item=${item%x}
+  fm_sanitize_untrusted_text_var "$item"
+  # $t is the jq --arg name, not a shell expansion.
+  # shellcheck disable=SC2016
+  fmx_sanitize_mention_set_text "$file" "$tmp" \
+    'if (.text | type) == "string" then .text = $t else . end' \
+    "$FM_UNTRUSTED_TEXT" || {
+    rm -f "$tmp"
+    return 1
+  }
+
+  if jq -e '.in_reply_to | type == "object"' "$file" >/dev/null 2>&1; then
+    item=$(jq -j '.in_reply_to | if (.text | type) == "string" then .text else "" end' "$file" 2>/dev/null && printf x) || {
+      rm -f "$tmp"
+      return 1
+    }
+    item=${item%x}
+    fm_sanitize_untrusted_text_var "$item"
+    # $t is the jq --arg name, not a shell expansion.
+    # shellcheck disable=SC2016
+    fmx_sanitize_mention_set_text "$file" "$tmp" \
+      'if (.in_reply_to | type) == "object" and (.in_reply_to.text | type) == "string" then .in_reply_to.text = $t else . end' \
+      "$FM_UNTRUSTED_TEXT" || { rm -f "$tmp"; return 1; }
+  fi
+
+  # Chain texts are extracted in one pass, each record followed by a NUL so
+  # embedded newlines stay inside their record; embedded NULs are dropped by
+  # the same jq pass, matching what shell string handling could never carry.
+  raw=$(mktemp "${TMPDIR:-/tmp}/fm-x-chain.XXXXXX") || { rm -f "$tmp"; return 1; }
+  san=$(mktemp "${TMPDIR:-/tmp}/fm-x-chain.XXXXXX") || { rm -f "$tmp" "$raw"; return 1; }
+  if ! jq -j '
+    .in_reply_to_chain
+    | (if type == "array" then .[] else empty end)
+    | (if type == "object" and ((.text | type) == "string")
+       then ((.text | gsub("\u0000"; "")) + "\u0000")
+       else empty end)
+  ' "$file" > "$raw" 2>/dev/null; then
+    rm -f "$tmp" "$raw" "$san"
+    return 1
+  fi
+  : > "$san"
+  failed=0
+  while IFS= read -r -d '' item; do
+    fm_sanitize_untrusted_text_var "$item"
+    printf '%s\0' "$FM_UNTRUSTED_TEXT" >> "$san" || { failed=1; break; }
+  done < "$raw"
+  rm -f "$raw"
+  if [ "$failed" -ne 0 ]; then
+    rm -f "$tmp" "$san"
+    return 1
+  fi
+  # The sanitized records go back in one jq --rawfile pass that pairs them, in
+  # order, with the entries whose .text is already a string; a count mismatch
+  # leaves the chain untouched.
+  if [ -s "$san" ]; then
+    if ! jq --rawfile san "$san" '
+      ($san | split("\u0000")) as $all
+      | ($all | if (length > 0) and (.[-1] == "") then .[0:(length - 1)] else . end) as $texts
+      | [ .in_reply_to_chain
+          | (if type == "array" then to_entries[] else empty end)
+          | select((.value | type) == "object" and ((.value.text | type) == "string"))
+          | .key ] as $keys
+      | if (($keys | length) == ($texts | length)) and (($keys | length) > 0) then
+          reduce range(0; ($keys | length)) as $i (.;
+            .in_reply_to_chain[$keys[$i]] |=
+              (if type == "object" and ((.text | type) == "string") then .text = $texts[$i] else . end))
+        else . end
+    ' "$file" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp" "$san"
+      return 1
+    fi
+    mv -f "$tmp" "$file" || { rm -f "$tmp" "$san"; return 1; }
+  fi
+  rm -f "$san"
 }
