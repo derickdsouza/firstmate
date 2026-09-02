@@ -7,9 +7,10 @@
 # delivers them. Those instructions carry the scratch-state inventory, the clean
 # default-branch base, the fm/<task-id> branch, and - rendered from
 # bin/fm-dod-lib.sh, the single owner an ordinary ship brief also uses - the
-# mode-specific Definition of done, so a promoted worker receives exactly the same
-# delivery contract as a briefed one, including the no-mistakes mode's ask-user
-# escalation rule and --yes ban.
+# mode-specific Definition of done and the worker-facing rule-file layering
+# contract, so a promoted worker receives exactly the same delivery contract as
+# a briefed one, including the no-mistakes mode's ask-user escalation rule and
+# --yes ban.
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
 # alongside the kind= flip. Firstmate resolves both at promotion time, having just
@@ -148,6 +149,8 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
 5. If you reproduced a bug, turn that reproduction into a regression test.
 6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
+
+$(fm_layering_line)
 
 EOF
   fm_dod_block "$MODE" "$ID"

@@ -336,6 +336,8 @@ STUB
       "$mode: promoted worker was not told to stop for any wrong worktree"
     assert_grep "git checkout -b fm/$id" "$payload" \
       "$mode: promoted worker was not told to leave the scratch base for its ship branch"
+    assert_grep "A shared worker-facing rule file is law: never replace it with a same-named project file; put that specialization in a clearly-namespaced \`local-*\` file instead." "$payload" \
+      "$mode: promoted worker did not receive the rule-file layering contract"
 
     # Compare the public outputs of both real generation paths. The promoted
     # payload ends at its Definition of done, as does an ordinary generated
