@@ -337,8 +337,32 @@ window_key() {  # <window>
 # blocking. Runs for secondmates
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
+# Remote secondmates keep their steering inbox on the remote host under
+# state/parent-route, not in this home's state/<id>.inbox. Tick that inbox
+# through the host-local control command so the existing ladder still rings
+# and escalates; this watcher only turns escalate into a stale wake.
+remote_inbox_steer_check() {  # <window> <task>
+  local w=$1 task=$2 tick verb count reason
+  tick=$("$SCRIPT_DIR/fm-on.sh" "$task" fm-remote-secondmate-control.sh inbox-tick "$task" < /dev/null 2>/dev/null) || return 0
+  tick=$(printf '%s\n' "$tick" | tail -1)
+  verb=${tick%% *}
+  case "$verb" in
+    escalate)
+      count=${tick#* }
+      reason="stale: $w (unread firstmate instruction still unhandled after ${count:-?} doorbell delivery attempts with an idle remote helper; inspect the worker)"
+      fm_wake_append stale "$w" "$reason" || exit 1
+      wake "$reason"
+      ;;
+  esac
+}
+
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc remote_host
+  remote_host=$(fm_meta_get "$STATE/$task.meta" remote_host 2>/dev/null || true)
+  if [ -n "$remote_host" ]; then
+    remote_inbox_steer_check "$w" "$task"
+    return 0
+  fi
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0

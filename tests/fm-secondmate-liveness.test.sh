@@ -19,8 +19,9 @@
 #   - The Herdr classifier preserves the proven husk mapping while separating a
 #     missing pane from an existing agent-less pane.
 #   - fm_backend_agent_alive preserves the older three-state compatibility view.
-#   - bin/fm-bootstrap.sh's secondmate_liveness_sweep recovers only dead or
-#     missing endpoints, keeps successful recovery and already-live results
+#   - bin/fm-bootstrap.sh's secondmate_liveness_sweep recovers dead or
+#     missing endpoints and replaces a remote helper classified stuck,
+#     keeps successful recovery and already-live results
 #     silent by default, and reports ambiguous and unreadable targets distinctly.
 #   - The sweep converges: once a secondmate reads alive, a later run never
 #     re-touches it (idempotent by construction, not by remembering what it

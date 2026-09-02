@@ -3,7 +3,10 @@
 #
 # Usage:
 #   fm-remote-secondmate-control.sh launch <id> <harness> <model|-> <effort|-> herdr [traceparent]
+#   fm-remote-secondmate-control.sh relaunch <id> <harness> <model|-> <effort|-> herdr [traceparent]
 #   fm-remote-secondmate-control.sh state <id>
+#   fm-remote-secondmate-control.sh health <id>
+#   fm-remote-secondmate-control.sh inbox-tick <id>
 #   fm-remote-secondmate-control.sh route <id>
 #   fm-remote-secondmate-control.sh send <id> <message> [fire-and-forget]
 #   fm-remote-secondmate-control.sh key <id> <key>
@@ -33,6 +36,11 @@
 # the default-off path. print_route echoes the carrier the endpoint actually
 # holds, including for an already-alive endpoint that was not relaunched, so the
 # parent records the identity the agent really received rather than an intent.
+# An already-alive launch is a no-op unless health is stuck (unacked inbox past
+# the steering-inbox ladder, or a repeating Node missing-module capture after a
+# harness upgrade under a live process); stuck helpers are stopped and replaced.
+# relaunch always stops then starts. health and inbox-tick are the classifiers
+# and ladder tick; bin/fm-secondmate-health-lib.sh owns the stuck vocabulary.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,9 +56,11 @@ REMOTE_HERDR_SESSION=fm-remote
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# shellcheck source=bin/fm-secondmate-health-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-health-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,${/^#/!q;p;}' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 validate_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) die "invalid secondmate id: $1" ;; esac; }
 
 validate_home() { # <id> [allow-absent]
@@ -123,6 +133,74 @@ print_route() { # <id>
   [ -z "$traceparent" ] || printf 'traceparent=%s\n' "$traceparent"
 }
 
+cmd_health() {
+  local id=$1 agent_state inbox_stuck=0 runtime_fault=0 capture
+  validate_id "$id"
+  validate_home "$id"
+  agent_state=$(state_value "$id")
+  if fm_secondmate_inbox_stuck "$CONTROL_STATE" "$id"; then
+    inbox_stuck=1
+  fi
+  if [ "$agent_state" = alive ]; then
+    remote_endpoint_require "$id"
+    capture=$(fm_backend_capture "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 40 "fm-$id" 2>/dev/null || true)
+    if printf '%s' "$capture" | fm_secondmate_capture_has_runtime_fault; then
+      runtime_fault=1
+    fi
+  fi
+  fm_secondmate_health_from_parts "$agent_state" "$inbox_stuck" "$runtime_fault"
+}
+
+cmd_inbox_tick() {
+  local id=$1 action verb rec count
+  validate_id "$id"
+  validate_home "$id"
+  action=$(fm_task_inbox_due_action "$CONTROL_STATE" "$id") || {
+    printf 'quiet\n'
+    return 0
+  }
+  verb=${action%% *}
+  case "$verb" in
+    quiet)
+      printf 'quiet\n'
+      ;;
+    ring)
+      rec=${action#* }
+      remote_endpoint_require "$id"
+      fm_task_inbox_ring "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" "$rec" "fm-$id" || true
+      fm_task_inbox_record_ring "$CONTROL_STATE" "$id" "$rec" || true
+      printf 'rang\n'
+      ;;
+    escalate)
+      rec=${action#* }
+      count=${rec##* }
+      rec=${rec% *}
+      fm_task_inbox_record_escalated "$CONTROL_STATE" "$id" "$rec" || true
+      printf 'escalate %s\n' "$count"
+      ;;
+    *)
+      printf 'quiet\n'
+      ;;
+  esac
+}
+
+cmd_relaunch() {
+  local id=$1 current
+  validate_id "$id"
+  validate_home "$id"
+  current=$(state_value "$id")
+  case "$current" in
+    alive|unreadable|ambiguous|unverified)
+      remote_endpoint_require "$id"
+      fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
+        || die "could not stop remote secondmate $id for relaunch"
+      ;;
+    dead|missing) ;;
+    *) die "remote endpoint state is $current; refusing relaunch" ;;
+  esac
+  cmd_launch "$@"
+}
+
 cmd_route() {
   local id=$1 meta
   validate_id "$id"
@@ -136,7 +214,7 @@ cmd_route() {
 
 cmd_launch() {
   local id=$1 harness=$2 model=$3 effort=$4 selected_backend=$5 traceparent=${6:-}
-  local current meta out herdr_session
+  local current meta out herdr_session health
 
   validate_id "$id"
   validate_home "$id"
@@ -156,8 +234,17 @@ cmd_launch() {
     current=$(fm_backend_agent_state "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null || printf 'unreadable\n')
     case "$current" in
       alive)
-        print_route "$id"
-        return 0
+        health=$(cmd_health "$id")
+        case "$health" in
+          stuck:*)
+            fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
+              || die "could not stop stuck remote secondmate $id ($health)"
+            ;;
+          *)
+            print_route "$id"
+            return 0
+            ;;
+        esac
         ;;
       dead)
         fm_backend_kill "$REMOTE_ENDPOINT_BACKEND" "$REMOTE_ENDPOINT_TARGET" 2>/dev/null \
@@ -326,7 +413,10 @@ cmd_retire() {
 
 case "${1:-}" in
   launch) shift; [ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage; cmd_launch "$@" ;;
+  relaunch) shift; [ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage; cmd_relaunch "$@" ;;
   state) shift; [ "$#" -eq 1 ] || usage; validate_id "$1"; validate_home "$1"; state_value "$1" ;;
+  health) shift; [ "$#" -eq 1 ] || usage; cmd_health "$1" ;;
+  inbox-tick) shift; [ "$#" -eq 1 ] || usage; cmd_inbox_tick "$1" ;;
   route) shift; [ "$#" -eq 1 ] || usage; cmd_route "$1" ;;
   send) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_send "$@" ;;
   key) shift; [ "$#" -eq 2 ] || usage; cmd_key "$@" ;;

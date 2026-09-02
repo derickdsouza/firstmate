@@ -575,6 +575,8 @@ secondmate_sync() {
     fi
     if ! "$SCRIPT_DIR/fm-procevent-remote-reply.sh" arm "$id" >/dev/null 2>&1; then
       echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote reply source could not be registered"
+    else
+      "$SCRIPT_DIR/fm-procevent.sh" reconcile >/dev/null 2>&1 || true
     fi
     remote_generation=$(fm_remote_inherit_generation_next "$STATE" "$id" 2>/dev/null || true)
     if [ -z "$remote_generation" ]; then
@@ -709,7 +711,7 @@ secondmate_liveness_one_timed() {  # <meta> <id> <label>
 # secondmate_note_respawned so a concurrent sweep can collect them after wait.
 secondmate_liveness_one() {  # <meta> <id>
   local meta=$1 id=$2
-  local window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend
+  local window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend health health_out
   window=$(fm_meta_get "$meta" window)
   [ -n "$window" ] || return 0
   harness=$(fm_meta_get "$meta" harness)
@@ -763,7 +765,25 @@ secondmate_liveness_one() {  # <meta> <id>
           echo "SECONDMATE_LIVENESS: secondmate $id: skipped: alive remote endpoint is recorded on backend '${remote_backend:-missing}'; migrate or retire it explicitly"
           return 0
         fi
-        [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] || echo "BOOTSTRAP_INFO: remote secondmate $id already live (host=$remote_host)"
+        if health_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh health "$id" < /dev/null 2>/dev/null); then
+          health=$(printf '%s\n' "$health_out" | tail -1)
+        else
+          health=unreadable
+        fi
+        case "$health" in
+          stuck:*)
+            cause="remote helper $health on its configured host"
+            if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
+              secondmate_note_respawned "$id"
+              report_relaunch "$id" "$cause" "host=$remote_host"
+            else
+              echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed after $cause: $(first_line "$out")"
+            fi
+            ;;
+          *)
+            [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] || echo "BOOTSTRAP_INFO: remote secondmate $id already live (host=$remote_host)"
+            ;;
+        esac
         ;;
       dead|missing)
         cause="remote endpoint $agent_state on its configured host"
