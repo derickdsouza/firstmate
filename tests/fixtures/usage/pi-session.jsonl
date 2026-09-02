@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"01a046bb-4563-72fb-a99e-bd45ca37e83f","timestamp":"2026-09-01T11:00:00.000Z","cwd":"/wt/fixture"}
+{"type":"model_change","id":"16c7b2b3","parentId":null,"timestamp":"2026-09-01T11:00:00.500Z","provider":"zai","modelId":"glm-5.3-flash"}
+{"type":"message","id":"2d8028b8","parentId":"16c7b2b3","timestamp":"2026-09-01T11:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"fixture"}]}}
+{"type":"message","id":"8697d6c0","parentId":"2d8028b8","timestamp":"2026-09-01T11:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"fixture"}],"usage":{"input":100,"output":10,"cacheRead":5,"cacheWrite":7,"reasoning":3,"totalTokens":115,"cost":{"input":0.01,"output":0.001,"cacheRead":0.0005,"cacheWrite":0.0007,"total":0.01}}}}
+{"type":"message","id":"9a1b2c3d","parentId":"8697d6c0","timestamp":"2026-09-01T11:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"fixture"}],"usage":{"input":40,"output":2,"cacheRead":0,"cacheWrite":0,"reasoning":1,"totalTokens":43,"cost":{"input":0.004,"output":0.0002,"cacheRead":0,"cacheWrite":0,"total":0.004}}}}

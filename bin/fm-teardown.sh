@@ -19,6 +19,13 @@
 # home with a backlog but no compatible tasks-axi refuses before cleanup.
 # None of this loosens the landed-work gates below: the transition runs only on
 # the paths that already proceed to remove the record.
+# After every refusal gate has passed and before the durable records go, the
+# teardown also appends this task's token usage line to data/usage.jsonl from
+# the session-log binding spawn recorded (usage_source=/usage_log= meta;
+# schema fm-usage.v1). The append is best effort by contract: a missing or
+# unreadable log records a zero-token line with usage_source=missing, and no
+# ledger failure ever fails the teardown. bin/fm-usage-lib.sh owns the
+# summation mechanics and docs/configuration.md "Usage ledger" the schema.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -189,6 +196,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-usage-lib.sh
+. "$SCRIPT_DIR/fm-usage-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -2864,6 +2873,10 @@ if [ "$KIND" = secondmate ]; then
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
+# Append this task's token usage line to data/usage.jsonl before the durable
+# records go (bin/fm-usage-lib.sh owns the fm-usage.v1 contract). Best effort
+# by contract: a missing log or a summation failure never fails this teardown.
+fm_usage_ledger_append "$DATA" "$META" "$ID" || true
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.

@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, and explicitly installed content-addressed extension packages under `data/extensions/packages/`.
+`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, scout reports, the per-task token usage ledger under `data/usage.jsonl` (see "Usage ledger" below), and explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 `state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, enabled extension working namespaces under `state/extensions/`, away-mode state, generated Relay artifacts, parent-side remote ledger copies under `state/secondmate-summary-cache/`, one-shot Bearings reconcile requests under `state/reconcile-notify/`, private secondmate config-reread generations with their retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 Untracked files and directories whose names begin with `scratchpad` are also gitignored, so temporary scratch does not make porcelain-based secondmate sync guards treat a home as dirty.
@@ -233,6 +233,16 @@ The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative po
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
 The helper's header owns exact parsing, publication, and report output mechanics.
+
+## Usage ledger (data/usage.jsonl)
+
+The per-task token usage ledger `data/usage.jsonl` records which harness and model did each finished task's work and how many tokens it used, so a later status surface can show share of usage per harness and model.
+It is append-only JSON Lines with the schema name `fm-usage.v1`.
+`bin/fm-spawn.sh` binds the worker's harness session log at spawn into `state/<id>.meta` as `usage_source=` (`claude`, `codex`, or `pi` for harnesses with a known on-disk per-turn usage source, `none` otherwise, including remote secondmates) plus `usage_log=<path or glob>` for the bound harnesses; `bin/fm-teardown.sh` sums that log and appends one line after every refusal gate has passed and before the task record is removed.
+Each line carries `ts`, `task`, `repo`, `kind`, `harness`, `model`, `effort`, `tokens{input,output,cache_read,cache_write,reasoning}`, `cost` (summed when the source reports per-turn cost, else null), `first_seen` and `last_seen` (the summed log's entry-timestamp range, null when none), and `usage_source` (`missing` with zero tokens when a bound log matched nothing readable).
+A task spawned before this contract has no `usage_source=` and appends nothing.
+The append is best effort by contract: no ledger condition ever fails a teardown.
+`bin/fm-usage-lib.sh`'s header is the single owner of the bound-location encoding for each harness, the token-class mapping, the machine-wide Codex date-directory scoping, and the v1 glob-precision limitation; there is no daemon, no live polling, and no network or cost lookup involved.
 
 ## Stow pass horizon (config/stow-pass-horizon)
 
