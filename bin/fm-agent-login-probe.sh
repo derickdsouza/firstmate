@@ -6,10 +6,16 @@
 # exit 1 when at least one needs (re)login. Safe to run from cron, when-watches,
 # or an interactive shell on macOS and Linux.
 #
+# Local host label is "mac" on Darwin and "vps" on Linux. Darwin uses
+# /bin/zsh -l for pi so login-shell keychain loaders run; Linux uses the
+# hardened PATH (nvm / ~/.local/bin) because zsh is not required there.
+# Remote VPS probes over ssh run only from Darwin, so a Linux host (this
+# machine is the VPS) does not ssh to itself.
+#
 # Environment:
 #   FM_LOGIN_PROBE_VPS_SSH  SSH host alias for optional VPS probes (default:
 #                           ghwave when BatchMode ssh succeeds; empty disables).
-#   FM_LOGIN_PROBE_SKIP_VPS   1 = skip VPS probes even when ssh is configured.
+#   FM_LOGIN_PROBE_SKIP_VPS   1 = skip remote VPS probes even when ssh is configured.
 #
 # Cron hardening: cron's PATH lacks ~/.local/bin, nvm, and Homebrew roots, and
 # a minimal environment may not export USER, which login-shell keychain
@@ -32,6 +38,13 @@ export PATH
 
 FAIL=0
 
+local_host_label() {
+  case "$(uname -s)" in
+    Darwin) printf 'mac\n' ;;
+    *) printf 'vps\n' ;;
+  esac
+}
+
 probe_ok() {  # <host-label> <agent-label>
   printf 'OK   %s@%s\n' "$2" "$1"
 }
@@ -47,52 +60,74 @@ has_stdout() {  # <command...>
   [ -n "$out" ]
 }
 
-check_mac_pi() {
-  if ! command -v pi >/dev/null 2>&1; then
-    probe_fail mac pi 'pi not installed'
-    return
-  fi
-  if /bin/zsh -l -c 'pi --list-models 2>/dev/null' | grep -q '^zai'; then
-    probe_ok mac pi
+# pi on Darwin needs a login zsh so keychain-backed env is present. Linux
+# uses the hardened PATH (nvm / ~/.local/bin); zsh is not required.
+pi_list_models() {
+  if [ "$(uname -s)" = Darwin ] && [ -x /bin/zsh ]; then
+    /bin/zsh -l -c 'pi --list-models 2>/dev/null' || true
   else
-    probe_fail mac pi 'needs re-login'
+    pi --list-models 2>/dev/null || true
   fi
 }
 
-check_mac_grok() {
+check_local_pi() {  # <host-label>
+  local host=$1
+  if ! command -v pi >/dev/null 2>&1; then
+    probe_fail "$host" pi 'pi not installed'
+    return
+  fi
+  if printf '%s\n' "$(pi_list_models)" | grep -q '^zai'; then
+    probe_ok "$host" pi
+  else
+    probe_fail "$host" pi 'needs re-login'
+  fi
+}
+
+check_local_grok() {  # <host-label>
+  local host=$1
   if ! command -v grok >/dev/null 2>&1; then
-    probe_fail mac grok 'grok not installed'
+    probe_fail "$host" grok 'grok not installed'
     return
   fi
   if grok models 2>/dev/null | grep -q 'grok-'; then
-    probe_ok mac grok
+    probe_ok "$host" grok
   else
-    probe_fail mac grok 'needs re-login'
+    probe_fail "$host" grok 'needs re-login'
   fi
 }
 
-check_mac_cursor() {
+check_local_cursor() {  # <host-label>
+  local host=$1
   if ! command -v cursor-agent >/dev/null 2>&1; then
-    probe_fail mac cursor 'cursor-agent not installed'
+    probe_fail "$host" cursor 'cursor-agent not installed'
     return
   fi
   if cursor-agent --list-models 2>/dev/null | grep -q 'composer'; then
-    probe_ok mac cursor
+    probe_ok "$host" cursor
   else
-    probe_fail mac cursor 'needs re-login'
+    probe_fail "$host" cursor 'needs re-login'
   fi
 }
 
-check_mac_claude() {
+check_local_claude() {  # <host-label>
+  local host=$1
   if [ -f "${HOME}/.claude/.credentials.json" ] || [ -d "${HOME}/.claude/plugins" ]; then
-    probe_ok mac claude
+    probe_ok "$host" claude
     return
   fi
   if command -v claude >/dev/null 2>&1 && claude --version >/dev/null 2>&1; then
-    probe_ok mac claude
+    probe_ok "$host" claude
   else
-    probe_fail mac claude 'needs re-login'
+    probe_fail "$host" claude 'needs re-login'
   fi
+}
+
+check_local() {  # <host-label>
+  local host=$1
+  check_local_pi "$host"
+  check_local_grok "$host"
+  check_local_cursor "$host"
+  check_local_claude "$host"
 }
 
 check_vps() {  # <ssh-alias>
@@ -144,13 +179,14 @@ resolve_vps_ssh() {
   return 1
 }
 
-check_mac_pi
-check_mac_grok
-check_mac_cursor
-check_mac_claude
+LOCAL_LABEL=$(local_host_label)
+check_local "$LOCAL_LABEL"
 
-if vps_ssh=$(resolve_vps_ssh); then
-  [ -n "$vps_ssh" ] && check_vps "$vps_ssh"
+# Remote VPS probes belong on Darwin. Linux already is the VPS.
+if [ "$LOCAL_LABEL" = mac ]; then
+  if vps_ssh=$(resolve_vps_ssh); then
+    [ -n "$vps_ssh" ] && check_vps "$vps_ssh"
+  fi
 fi
 
 exit "$FAIL"

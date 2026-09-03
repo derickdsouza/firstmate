@@ -71,8 +71,14 @@ pass 'held lock makes poll exit 0 without arming'
 # --- login probe under a cron-like minimal environment -----------------------
 
 # env -i reproduces cron: no ~/.local/bin, no nvm, no USER. The probe must
-# still complete every Mac check, exit 0 or 1, and never hit an unbound
+# still complete every local check, exit 0 or 1, and never hit an unbound
 # variable (the 2026-08-31 report died with "v: unbound variable").
+# Darwin labels the host mac; Linux (this VPS) labels it vps.
+if [ "$(uname -s)" = Darwin ]; then
+  PROBE_HOST=mac
+else
+  PROBE_HOST=vps
+fi
 PROBE_OUT=$(env -i HOME="$HOME" PATH=/usr/bin:/bin FM_LOGIN_PROBE_SKIP_VPS=1 \
   /bin/bash "$ROOT/bin/fm-agent-login-probe.sh" 2>&1)
 PROBE_RC=$?
@@ -84,8 +90,41 @@ case "$PROBE_OUT" in
   *'unbound variable'*) fail 'probe hit an unbound variable under the minimal env' ;;
 esac
 for agent in pi grok cursor claude; do
-  printf '%s\n' "$PROBE_OUT" | grep -q "$agent@mac" || fail "probe minimal-env output missing a $agent@mac verdict"
+  printf '%s\n' "$PROBE_OUT" | grep -q "$agent@$PROBE_HOST" \
+    || fail "probe minimal-env output missing a $agent@$PROBE_HOST verdict"
 done
 pass 'login probe completes under minimal cron env'
+
+# Linux equivalent: fake CLIs on PATH, no zsh. Darwin keeps /bin/zsh -l for
+# pi and is skipped here; this case is the VPS path.
+if [ "$(uname -s)" != Darwin ]; then
+  NOZSH="$TMP_ROOT/no-zsh"
+  mkdir -p "$NOZSH"
+  cat > "$NOZSH/pi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'zai/glm-5.3'
+SH
+  cat > "$NOZSH/grok" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'grok-4.6'
+SH
+  cat > "$NOZSH/cursor-agent" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'composer-2.5'
+SH
+  cat > "$NOZSH/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'claude 1.0'
+SH
+  chmod +x "$NOZSH"/pi "$NOZSH"/grok "$NOZSH"/cursor-agent "$NOZSH"/claude
+  NOZSH_OUT=$(env -i HOME="$TMP_ROOT/empty-home" PATH="$NOZSH:/usr/bin:/bin" \
+    FM_LOGIN_PROBE_SKIP_VPS=1 /bin/bash "$ROOT/bin/fm-agent-login-probe.sh" 2>&1)
+  printf '%s\n' "$NOZSH_OUT" | grep -q "OK   pi@vps" \
+    || fail "Linux PATH probe missing OK pi@vps; got: $NOZSH_OUT"
+  case "$NOZSH_OUT" in
+    *'/bin/zsh'*) fail "Linux probe invoked zsh: $NOZSH_OUT" ;;
+  esac
+  pass 'login probe uses PATH pi on Linux without zsh'
+fi
 
 printf 'done\n'
