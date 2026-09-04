@@ -60,15 +60,35 @@ has_stdout() {  # <command...>
   [ -n "$out" ]
 }
 
-# pi on Darwin needs a login zsh so keychain-backed env is present. Linux
-# uses the hardened PATH (nvm / ~/.local/bin); zsh is not required.
-pi_list_models() {
-  if [ "$(uname -s)" = Darwin ] && [ -x /bin/zsh ]; then
-    /bin/zsh -l -c 'pi --list-models 2>/dev/null' || true
+# Catalog probe with actionable FAIL detail (firstmate #10): a FAIL must
+# say WHY. Exit 127 = the CLI resolved in the probe's shell but not in the
+# invocation context (login shell / PATH reset under the when-watch runner);
+# any other non-zero exit carries the code plus first stderr bytes (auth or
+# runtime fault — the only real 'needs re-login' family); exit 0 with no
+# pattern match is a catalog fetch that returned nothing usable.
+check_catalog_match() {  # <host-label> <agent> <grep-pattern> <command...>
+  local host=$1 agent=$2 pattern=$3
+  shift 3
+  local out rc errfile err
+  errfile=$(mktemp)
+  out=$("$@" 2>"$errfile"); rc=$?
+  err=$(head -c 120 "$errfile" | tr '\n' ' ')
+  rm -f "$errfile"
+  if [ "$rc" -eq 127 ]; then
+    probe_fail "$host" "$agent" "$agent not on PATH in this invocation (exit 127)"
+  elif [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "$pattern"; then
+    probe_ok "$host" "$agent"
+  elif [ "$rc" -ne 0 ]; then
+    probe_fail "$host" "$agent" "command failed (exit $rc${err:+: $err})"
   else
-    pi --list-models 2>/dev/null || true
+    probe_fail "$host" "$agent" "catalog fetch failed (no match for '$pattern', exit 0${err:+: $err})"
   fi
 }
+
+# pi on Darwin needs a login zsh so keychain-backed env is present. Linux
+# uses the hardened PATH (nvm / ~/.local/bin); zsh is not required.
+# (Catalog invocation lives in check_local_pi so its exit code and stderr
+# reach check_catalog_match — see firstmate #10.)
 
 check_local_pi() {  # <host-label>
   local host=$1
@@ -76,10 +96,12 @@ check_local_pi() {  # <host-label>
     probe_fail "$host" pi 'pi not installed'
     return
   fi
-  if printf '%s\n' "$(pi_list_models)" | grep -q '^zai'; then
-    probe_ok "$host" pi
+  # pi on Darwin needs a login zsh so keychain-backed env is present. Linux
+  # uses the hardened PATH (nvm / ~/.local/bin); zsh is not required.
+  if [ "$(uname -s)" = Darwin ] && [ -x /bin/zsh ]; then
+    check_catalog_match "$host" pi '^zai' /bin/zsh -l -c 'pi --list-models'
   else
-    probe_fail "$host" pi 'needs re-login'
+    check_catalog_match "$host" pi '^zai' pi --list-models
   fi
 }
 
@@ -89,11 +111,7 @@ check_local_grok() {  # <host-label>
     probe_fail "$host" grok 'grok not installed'
     return
   fi
-  if grok models 2>/dev/null | grep -q 'grok-'; then
-    probe_ok "$host" grok
-  else
-    probe_fail "$host" grok 'needs re-login'
-  fi
+  check_catalog_match "$host" grok 'grok-' grok models
 }
 
 check_local_cursor() {  # <host-label>
@@ -102,11 +120,7 @@ check_local_cursor() {  # <host-label>
     probe_fail "$host" cursor 'cursor-agent not installed'
     return
   fi
-  if cursor-agent --list-models 2>/dev/null | grep -q 'composer'; then
-    probe_ok "$host" cursor
-  else
-    probe_fail "$host" cursor 'needs re-login'
-  fi
+  check_catalog_match "$host" cursor 'composer' cursor-agent --list-models
 }
 
 check_local_claude() {  # <host-label>
