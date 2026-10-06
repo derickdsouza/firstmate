@@ -122,7 +122,7 @@ test_spawn_binds_claude_session_dir() {
   meta="$SPAWN_HOME/state/$id.meta"
   slug=$(printf '%s' "$WT_DIR" | sed 's/[^A-Za-z0-9]/-/g')
   assert_grep "usage_source=claude" "$meta" "claude meta missing usage_source"
-  assert_grep "usage_log=$FAKE_HOME/.claude/projects/$slug/*.jsonl" "$meta" \
+  assert_grep "usage_log=$SPAWN_HOME/user-home/.claude/projects/$slug/*.jsonl" "$meta" \
     "claude meta missing the session-dir glob for its worktree"
   pass "claude spawn binds the Claude Code project session dir"
 }
@@ -149,8 +149,8 @@ test_spawn_binds_codex_date_glob() {
   out=$(run_usage_spawn "$id" codex)
   expect_code 0 "$?" "codex spawn should succeed"
   meta="$SPAWN_HOME/state/$id.meta"
-  today="$FAKE_HOME/.codex/sessions/$(date +%Y/%m/%d)/*.jsonl"
-  tomorrow="$FAKE_HOME/.codex/sessions/$(date -v+1d +%Y/%m/%d 2>/dev/null || date -d tomorrow +%Y/%m/%d)/*.jsonl"
+  today="$SPAWN_HOME/user-home/.codex/sessions/$(date +%Y/%m/%d)/*.jsonl"
+  tomorrow="$SPAWN_HOME/user-home/.codex/sessions/$(date -v+1d +%Y/%m/%d 2>/dev/null || date -d tomorrow +%Y/%m/%d)/*.jsonl"
   assert_grep "usage_source=codex" "$meta" "codex meta missing usage_source"
   { grep -F "usage_log=$today" "$meta" || grep -F "usage_log=$tomorrow" "$meta"; } >/dev/null \
     || fail "codex meta missing the spawn-date session glob: $(grep '^usage_log=' "$meta")"
@@ -167,7 +167,7 @@ test_spawn_binds_pi_session_dir() {
   meta="$SPAWN_HOME/state/$id.meta"
   dashed=$(printf '%s' "${WT_DIR#/}" | tr '/' '-')
   assert_grep "usage_source=pi" "$meta" "pi meta missing usage_source"
-  assert_grep "usage_log=$FAKE_HOME/.pi/agent/sessions/--$dashed--/*.jsonl" "$meta" \
+  assert_grep "usage_log=$SPAWN_HOME/user-home/.pi/agent/sessions/--$dashed--/*.jsonl" "$meta" \
     "pi meta missing the dashed session-dir glob for its worktree"
   pass "pi spawn binds the pi agent session dir"
 }
