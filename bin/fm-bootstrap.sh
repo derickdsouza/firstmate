@@ -749,33 +749,13 @@ secondmate_liveness_one_timed() {  # <meta> <id> <label>
 # this function keeps this sweep's exact reporting.
 secondmate_liveness_one() {  # <meta> <id>
   local meta=$1 id=$2
-  local remote_host health health_out
   if ! fm_secondmate_liveness_lock "$id"; then
     echo "SECONDMATE_LIVENESS: secondmate $id: skipped: another liveness check is already in progress"
     return 0
   fi
+  # Full-mode probe owns remote stuck-helper upgrade (health via fm-on); this
+  # sweep only reports and relaunches.
   fm_secondmate_liveness_probe "$meta" "$id" full
-  # Retained fork change: an already-alive remote helper can still be stuck
-  # (unacked inbox past the ladder, or a repeating Node missing-module capture).
-  # Upstream's probe treats remote `alive` as healthy; classify health inside
-  # the same liveness lock before acting.
-  if [ "$FM_SM_LIVE_STATUS" = alive ]; then
-    remote_host=$(fm_meta_get "$meta" remote_host)
-    if [ -n "$remote_host" ]; then
-      if health_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh health "$id" < /dev/null 2>/dev/null); then
-        health=$(printf '%s\n' "$health_out" | tail -1)
-      else
-        health=unreadable
-      fi
-      case "$health" in
-        stuck:*)
-          FM_SM_LIVE_STATUS=relaunchable
-          FM_SM_LIVE_CAUSE="remote helper $health on its configured host"
-          FM_SM_LIVE_WHERE="host=$remote_host"
-          ;;
-      esac
-    fi
-  fi
   case "$FM_SM_LIVE_STATUS" in
     silent)
       ;;
