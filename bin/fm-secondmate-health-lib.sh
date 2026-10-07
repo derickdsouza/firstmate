@@ -6,9 +6,11 @@
 # repeating runtime-fault capture (a Node missing-module loop after a harness
 # upgrade under a long-lived process), is stuck and authorizes replace-relaunch.
 #
-# This library owns only the classifiers. bin/fm-remote-secondmate-control.sh
-# health/inbox-tick/relaunch and bin/fm-bootstrap.sh's liveness sweep consume
-# them. Sourced; no side effects on source.
+# This library owns the classifiers and the remote inbox-tick escalate reason
+# string. bin/fm-remote-secondmate-control.sh health/inbox-tick/relaunch,
+# bin/fm-secondmate-liveness-lib.sh's full-mode stuck upgrade, and
+# bin/fm-watch.sh's thin remote-steer wake emit consume them. Sourced; no side
+# effects on source.
 #
 # Tunables:
 #   FM_SECONDMATE_INBOX_STUCK_SECS
@@ -78,4 +80,26 @@ fm_secondmate_health_from_parts() {
     return 0
   fi
   printf '%s\n' "$agent_state"
+}
+
+# fm_secondmate_remote_inbox_escalate_reason <task-id> <window>
+#
+# Tick the remote secondmate's host-local steering inbox through
+# fm-remote-secondmate-control.sh inbox-tick. Prints the stale-wake reason and
+# returns 0 when the ladder says escalate; returns 1 on quiet/rang/unreachable
+# or any other non-escalate outcome. Wake emission stays in the watcher.
+fm_secondmate_remote_inbox_escalate_reason() {  # <task-id> <window>
+  local id=$1 window=$2 tick verb count
+  tick=$("$_FM_SECONDMATE_HEALTH_LIB_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh inbox-tick "$id" < /dev/null 2>/dev/null) || return 1
+  tick=$(printf '%s\n' "$tick" | tail -1)
+  verb=${tick%% *}
+  case "$verb" in
+    escalate)
+      count=${tick#* }
+      printf 'stale: %s (unread firstmate instruction still unhandled after %s doorbell delivery attempts with an idle remote helper; inspect the worker)\n' \
+        "$window" "${count:-?}"
+      return 0
+      ;;
+  esac
+  return 1
 }

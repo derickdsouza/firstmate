@@ -110,9 +110,71 @@ EOF
   pass "control health reports stuck:unacked-inbox for old remote mail"
 }
 
+# make_remote_tick_world <name>: parent home + registry + fake ssh that answers
+# inbox-tick with FM_FAKE_INBOX_TICK (default quiet).
+make_remote_tick_world() {
+  local name=$1 w fakebin
+  w="$TMP_ROOT/$name"
+  fakebin=$(fm_fakebin "$w")
+  mkdir -p "$w/home/state" "$w/home/data"
+  cat > "$w/home/data/secondmates.md" <<'EOF'
+- rsm1 - Remote mate (host: lab-host; root: /remote/root; home: /remote/rsm1-home; scope: remote work; projects: alpha; added 2026-01-01)
+EOF
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+printf '%s\n' "${FM_FAKE_INBOX_TICK:-quiet}"
+exit "${FM_FAKE_REMOTE_RC:-0}"
+SH
+  chmod +x "$fakebin/ssh"
+  printf '%s\n' "$w"
+}
+
+test_remote_inbox_escalate_reason() {
+  local w out rc
+  w=$(make_remote_tick_world tick-escalate)
+
+  out=$(
+    env FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh.log" \
+      FM_FAKE_INBOX_TICK='escalate 3' \
+      bash -c '
+        . "$0/bin/fm-secondmate-health-lib.sh"
+        fm_secondmate_remote_inbox_escalate_reason rsm1 remote:rsm1
+      ' "$ROOT"
+  ) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "escalate tick should return 0, got $rc"
+  [ "$out" = 'stale: remote:rsm1 (unread firstmate instruction still unhandled after 3 doorbell delivery attempts with an idle remote helper; inspect the worker)' ] \
+    || fail "escalate reason mismatch, got: $out"
+
+  out=$(
+    env FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh-quiet.log" \
+      FM_FAKE_INBOX_TICK=quiet \
+      bash -c '
+        . "$0/bin/fm-secondmate-health-lib.sh"
+        fm_secondmate_remote_inbox_escalate_reason rsm1 remote:rsm1
+      ' "$ROOT"
+  ) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || fail "quiet tick should return 1, got $rc (out=$out)"
+
+  out=$(
+    env FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh-down.log" \
+      FM_FAKE_REMOTE_RC=255 \
+      bash -c '
+        . "$0/bin/fm-secondmate-health-lib.sh"
+        fm_secondmate_remote_inbox_escalate_reason rsm1 remote:rsm1
+      ' "$ROOT"
+  ) && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || fail "unreachable tick should return 1, got $rc"
+  pass "remote inbox escalate reason classifies escalate/quiet/unreachable"
+}
+
 test_empty_inbox_is_not_stuck
 test_fresh_unhandled_is_not_stuck
 test_old_unhandled_is_stuck
 test_capture_runtime_fault
 test_health_from_parts
 test_control_health_old_inbox_without_herdr
+test_remote_inbox_escalate_reason

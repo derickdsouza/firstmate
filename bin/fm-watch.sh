@@ -221,6 +221,10 @@ WATCH_HOME_EXISTED=0
 # (inbox_steer_check below).
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# Remote inbox-tick escalate reason (stuck-helper steer wake text) lives in the
+# health lib so this watcher only emits the wake.
+# shellcheck source=bin/fm-secondmate-health-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-health-lib.sh"
 # The away-posture record (state/.afk-contract) is the posture in both the
 # attended and the afk session; bin/fm-afk-contract.sh owns its schema and its
 # away-or-quiet reading, which is all this watcher reads (away_record_present
@@ -522,22 +526,13 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 # Runs for secondmates too: their pane-staleness exemption is about quiet panes
 # being healthy, while an unacknowledged instruction can still be a stuck steer.
 # Remote secondmates keep their steering inbox on the remote host under
-# state/parent-route, not in this home's state/<id>.inbox. Tick that inbox
-# through the host-local control command so the existing ladder still rings
-# and escalates; this watcher only turns escalate into a stale wake.
+# state/parent-route. Classification (inbox-tick + escalate reason) lives in
+# fm-secondmate-health-lib.sh; this watcher only turns escalate into a wake.
 remote_inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 tick verb count reason
-  tick=$("$SCRIPT_DIR/fm-on.sh" "$task" fm-remote-secondmate-control.sh inbox-tick "$task" < /dev/null 2>/dev/null) || return 0
-  tick=$(printf '%s\n' "$tick" | tail -1)
-  verb=${tick%% *}
-  case "$verb" in
-    escalate)
-      count=${tick#* }
-      reason="stale: $w (unread firstmate instruction still unhandled after ${count:-?} doorbell delivery attempts with an idle remote helper; inspect the worker)"
-      fm_wake_append stale "$w" "$reason" || exit 1
-      wake "$reason"
-      ;;
-  esac
+  local w=$1 task=$2 reason
+  reason=$(fm_secondmate_remote_inbox_escalate_reason "$task" "$w") || return 0
+  fm_wake_append stale "$w" "$reason" || exit 1
+  wake "$reason"
 }
 
 inbox_steer_check() {  # <window> <task>

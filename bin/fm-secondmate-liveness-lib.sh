@@ -35,11 +35,14 @@
 #
 # Modes:
 #   full - session-start sweep: remote routes run the full readiness repair
-#          sequence before probing, and an alive remote route is revalidated
-#          (route readable, backend herdr) so the sweep reports drift.
+#          sequence before probing, an alive remote route is revalidated
+#          (route readable, backend herdr) so the sweep reports drift, and an
+#          already-alive remote helper classified stuck by remote health
+#          (unacked inbox / runtime fault) upgrades to relaunchable.
 #   poll - watcher tick: remote routes take one read-only state probe per
 #          check; repair still happens, but inside fm-spawn's launch gate only
-#          when a relaunch is actually authorized.
+#          when a relaunch is actually authorized. Mid-session stuck steers
+#          escalate through inbox-tick (fm-secondmate-health-lib.sh), not here.
 #
 # Concurrency: fm_secondmate_liveness_lock serializes probe+kill+relaunch per
 # task across the bootstrap sweep and the watcher tick, so a concurrent
@@ -83,6 +86,31 @@ fm_secondmate_liveness_unlock() {  # <id>
 
 fm_sm_live_first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
+}
+
+# fm_secondmate_liveness_apply_remote_stuck <id> <remote_host>
+#
+# When FM_SM_LIVE_STATUS is already alive for a remote mate, ask the remote
+# host's health classifier (fm-remote-secondmate-control.sh health) and upgrade
+# to relaunchable on stuck:*. Unreadable or non-stuck health leaves the alive
+# verdict alone. Caller holds the liveness lock; used by the full-mode probe so
+# bootstrap stays a thin report wrapper.
+fm_secondmate_liveness_apply_remote_stuck() {  # <id> <remote_host>
+  local id=$1 remote_host=$2 health_out health
+  [ "$FM_SM_LIVE_STATUS" = alive ] || return 0
+  [ -n "$remote_host" ] || return 0
+  if health_out=$("$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh health "$id" < /dev/null 2>/dev/null); then
+    health=$(printf '%s\n' "$health_out" | tail -1)
+  else
+    health=unreadable
+  fi
+  case "$health" in
+    stuck:*)
+      FM_SM_LIVE_STATUS=relaunchable
+      FM_SM_LIVE_CAUSE="remote helper $health on its configured host"
+      FM_SM_LIVE_WHERE="host=$remote_host"
+      ;;
+  esac
 }
 
 # One line per relaunch attempt and one per outcome, keyed by epoch, plus a
@@ -194,6 +222,11 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
         fi
         FM_SM_LIVE_STATUS=alive
         FM_SM_LIVE_LINE="remote secondmate $id already live (host=$remote_host)"
+        # Full-mode only: process-alive is not health. Upgrade stuck remotes
+        # (unacked inbox / runtime fault) to relaunchable before the caller acts.
+        if [ "$mode" = full ]; then
+          fm_secondmate_liveness_apply_remote_stuck "$id" "$remote_host"
+        fi
         ;;
       dead|missing)
         FM_SM_LIVE_STATUS=relaunchable

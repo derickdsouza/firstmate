@@ -703,6 +703,119 @@ test_remote_poll_probe_unreachable_preserves_route() {
   pass "poll probe: unreachable or inconclusive remote reads preserve the route"
 }
 
+# apply_remote_stuck: the full-mode glue that upgrades an already-alive remote
+# helper classified stuck by remote health. Pins the library helper so bootstrap
+# stays a thin report wrapper.
+apply_remote_stuck() {
+  local w=$1; shift
+  env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh.log" "$@" \
+    bash -c '
+      . "$0/bin/fm-secondmate-liveness-lib.sh"
+      FM_SM_LIVE_STATUS=${FM_SM_LIVE_STATUS_SEED:-alive}
+      FM_SM_LIVE_CAUSE= FM_SM_LIVE_WHERE=
+      fm_secondmate_liveness_apply_remote_stuck rsm1 lab-host
+      printf "%s|%s|%s\n" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_CAUSE" "$FM_SM_LIVE_WHERE"
+    ' "$ROOT"
+}
+
+test_apply_remote_stuck_upgrades_stuck_health() {
+  local w out
+  w=$(make_remote_probe_world apply-stuck)
+  out=$(apply_remote_stuck "$w" FM_FAKE_REMOTE_REPLY=stuck:unacked-inbox)
+  [ "$out" = 'relaunchable|remote helper stuck:unacked-inbox on its configured host|host=lab-host' ] \
+    || fail "stuck health should upgrade alive to relaunchable, got: $out"
+  out=$(apply_remote_stuck "$w" FM_FAKE_REMOTE_REPLY=alive)
+  [ "$out" = 'alive||' ] || fail "healthy alive must stay alive, got: $out"
+  out=$(apply_remote_stuck "$w" FM_SM_LIVE_STATUS_SEED=skipped FM_FAKE_REMOTE_REPLY=stuck:runtime-fault)
+  [ "$out" = 'skipped||' ] || fail "non-alive seed must be a no-op, got: $out"
+  pass "apply_remote_stuck: upgrades stuck health only when already alive"
+}
+
+# Full-mode probe: readiness (doctor exit 0) + state alive + route herdr + health
+# stuck must become relaunchable. Fake ssh dispatches on the remote argv verb.
+make_remote_full_stuck_world() {
+  local name=$1 w fakebin
+  w="$TMP_ROOT/$name"
+  fakebin=$(fm_fakebin "$w")
+  mkdir -p "$w/home/state" "$w/home/data" "$w/home/config"
+  cat > "$w/home/state/rsm1.meta" <<EOF
+window=remote:rsm1
+kind=secondmate
+harness=claude
+remote_host=lab-host
+remote_backend=herdr
+remote_herdr_session=fm-remote
+remote_target=fm-remote:w1:p1
+home=/remote/rsm1-home
+EOF
+  cat > "$w/home/data/secondmates.md" <<EOF
+- rsm1 - Remote mate (host: lab-host; root: /remote/root; home: /remote/rsm1-home; scope: remote work; projects: alpha; added 2026-01-01)
+EOF
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+# fm-on argv layout: ... fm-remote-entrypoint.sh PROTOCOL ROOT_B64 HOME_B64 ARGV_B64
+argv_b64=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = fm-remote-entrypoint.sh ]; then
+    shift 4 2>/dev/null || exit 90
+    argv_b64=${1:-}
+    break
+  fi
+  shift
+done
+[ -n "$argv_b64" ] || exit 91
+fields=$(perl -MMIME::Base64=decode_base64 -e '
+  my $data=decode_base64($ARGV[0]);
+  my @args=split(/\0/, $data);
+  print join("\t", map { defined $_ ? $_ : "" } @args[0..1]);
+' "$argv_b64")
+IFS=$'\t' read -r cmd verb <<EOF
+$fields
+EOF
+case "$cmd" in
+  fm-remote-doctor.sh) exit 0 ;;
+  fm-remote-secondmate-control.sh)
+    case "$verb" in
+      state) printf 'alive\n'; exit 0 ;;
+      route)
+        printf 'schema=fm-remote-secondmate-control.v1\n'
+        printf 'backend=herdr\n'
+        printf 'target=fm-remote:w1:p1\n'
+        exit 0
+        ;;
+      health) printf '%s\n' "${FM_FAKE_HEALTH:-stuck:unacked-inbox}"; exit 0 ;;
+    esac
+    ;;
+esac
+printf 'unexpected remote cmd=%s verb=%s\n' "$cmd" "$verb" >&2
+exit 1
+SH
+  chmod +x "$fakebin/ssh"
+  printf '%s\n' "$w"
+}
+
+test_remote_full_probe_upgrades_stuck_helper() {
+  local w out
+  w=$(make_remote_full_stuck_world probe-full-stuck)
+  out=$(probe_remote "$w" full FM_FAKE_HEALTH=stuck:unacked-inbox)
+  [ "$out" = 'relaunchable|alive|0|remote helper stuck:unacked-inbox on its configured host|host=lab-host|' ] \
+    || fail "full-mode alive+stuck health should be relaunchable, got: $out"
+
+  w=$(make_remote_full_stuck_world probe-full-healthy)
+  out=$(probe_remote "$w" full FM_FAKE_HEALTH=alive)
+  [ "$out" = 'alive|alive|0|||' ] || fail "full-mode alive+healthy should stay alive, got: $out"
+
+  # poll mode must not spend a health call even when the fake would answer stuck
+  w=$(make_remote_full_stuck_world probe-poll-no-health)
+  out=$(probe_remote "$w" poll)
+  [ "$out" = 'alive|alive|0|||' ] || fail "poll mode must not upgrade on health, got: $out"
+  grep -q health "$w/ssh.log" && fail "poll mode must not call remote health: $(cat "$w/ssh.log")"
+  pass "full probe: stuck remote health upgrades to relaunchable; poll skips health"
+}
+
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
@@ -722,5 +835,7 @@ test_sweep_skips_mate_whose_liveness_lock_is_held
 test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
+test_apply_remote_stuck_upgrades_stuck_health
+test_remote_full_probe_upgrades_stuck_helper
 
 echo "# all fm-secondmate-liveness tests passed"
