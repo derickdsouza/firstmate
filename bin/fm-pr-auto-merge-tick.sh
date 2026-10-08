@@ -4,9 +4,11 @@
 # Usage: fm-pr-auto-merge-tick.sh
 #
 # Kill switch: FM_PR_AUTO_MERGE defaults to on. Set to off|0|false|no to disable.
-# Harbor merges are refused while HARBOR_DO_UNFREEZE is unset (freeze gate here
-# and again inside bin/fm-pr-auto-merge.sh). Never wakes firstmate; prints one
-# line per decision to stdout for the watcher triage log.
+# While the harbor queue-only freeze is on (HARBOR_DO_UNFREEZE unset / not
+# truthy), merges are refused for EVERY repo, not only harbor: the PR stays
+# open and queued (freeze gate here and again inside bin/fm-pr-auto-merge.sh).
+# Never wakes firstmate; prints one line per decision to stdout for the
+# watcher triage log.
 set -u
 LC_ALL=C
 export LC_ALL
@@ -53,9 +55,9 @@ for poll in "$STATE"/*.pr-poll; do
   {
     IFS= read -r provider || continue
     IFS= read -r url || continue
-    IFS= read -r host || continue
-    IFS= read -r path || continue
-    IFS= read -r number || continue
+    IFS= read -r _host || continue
+    IFS= read -r _path || continue
+    IFS= read -r _number || continue
     if IFS= read -r _extra; then
       echo "auto-merge: skipped $id (sidecar has extra lines)"
       continue
@@ -78,9 +80,10 @@ for poll in "$STATE"/*.pr-poll; do
   esac
 
   found=1
-  repo=${path##*/}
-  if [ "$repo" = harbor ] && harbor_frozen; then
-    echo "auto-merge: refused freeze for $id $url (HARBOR_DO_UNFREEZE unset)"
+  # The freeze covers every repo (harbor #676 queue-only freeze; #737 leak).
+  # Refuse before calling the merge script so nothing merges while frozen.
+  if harbor_frozen; then
+    echo "auto-merge: refused freeze for $id $url — queued, not merged (HARBOR_DO_UNFREEZE unset; freeze covers every repo)"
     continue
   fi
 

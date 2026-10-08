@@ -41,10 +41,39 @@ test_freeze_refuses_harbor() {
   printf '%s\n' "$good_body_json" > "$FIXTURE_BODY"
   printf '%s\n' "$view_clean" > "$FIXTURE_VIEW"
   printf '%s\n' '[]' > "$FIXTURE_FILES"
-  out=$(PATH="$c/fakebin:$PATH" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE= \
+  out=$(PATH="$c/fakebin:$PATH" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE='' \
     "$AUTO" task-x1 'https://github.com/nivasritech/harbor/pull/9' --dry-run 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || { fail "freeze should refuse: $out"; return; }
   case "$out" in *freeze*) pass "freeze refuses harbor merge" ;; *) fail "expected freeze: $out" ;; esac
+}
+
+test_freeze_refuses_non_harbor() {
+  local c out rc=0
+  c="$TMP_ROOT/freeze-other"; mkdir -p "$c"; install_gh "$c"
+  export GH_LOG="$c/gh.log" FIXTURE_BODY="$c/body.json" FIXTURE_VIEW="$c/view.json" FIXTURE_FILES="$c/files.json"
+  printf '%s\n' "$good_body_json" > "$FIXTURE_BODY"
+  printf '%s\n' "$view_clean" > "$FIXTURE_VIEW"
+  printf '%s\n' '[]' > "$FIXTURE_FILES"
+  out=$(PATH="$c/fakebin:$PATH" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE='' \
+    "$AUTO" task-x2 'https://github.com/nivasritech/firstmate/pull/3' --dry-run 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { fail "freeze should refuse non-harbor: $out"; return; }
+  case "$out" in *freeze*) ;; *) fail "expected freeze: $out"; return ;; esac
+  case "$out" in *'would gh pr merge'*) fail "frozen non-harbor must not reach merge: $out"; return ;; esac
+  if [ -s "$GH_LOG" ]; then fail "freeze must refuse before any gh call: $(cat "$GH_LOG")"; return; fi
+  pass "freeze refuses non-harbor merge (no gh call)"
+}
+
+test_unfrozen_non_harbor_green_ok() {
+  local c out rc=0
+  c="$TMP_ROOT/green-other"; mkdir -p "$c"; install_gh "$c"
+  export GH_LOG="$c/gh.log" FIXTURE_BODY="$c/body.json" FIXTURE_VIEW="$c/view.json" FIXTURE_FILES="$c/files.json"
+  printf '%s\n' "$good_body_json" > "$FIXTURE_BODY"
+  printf '%s\n' "$view_clean" > "$FIXTURE_VIEW"
+  printf '%s\n' '[{"filename":"bin/fm-watch.sh"}]' > "$FIXTURE_FILES"
+  out=$(PATH="$c/fakebin:$PATH" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE=1 \
+    "$AUTO" task-x2 'https://github.com/nivasritech/firstmate/pull/3' --dry-run 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { fail "unfrozen non-harbor green rc=$rc out=$out"; return; }
+  case "$out" in *dry-run:*merge*) pass "unfrozen non-harbor: dry-run merge when green+Evidence" ;; *) fail "out=$out" ;; esac
 }
 
 test_missing_evidence_refuses() {
@@ -87,6 +116,8 @@ test_dry_run_green_ok() {
 }
 
 test_freeze_refuses_harbor
+test_freeze_refuses_non_harbor
+test_unfrozen_non_harbor_green_ok
 test_missing_evidence_refuses
 test_protected_path_refuses
 test_dry_run_green_ok

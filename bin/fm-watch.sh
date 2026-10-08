@@ -288,7 +288,7 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 # FM_PR_AUTO_MERGE: kill switch for the auto-merge tick (default on).
-# Set to off|0|false|no to disable. Harbor merges still refuse while
+# Set to off|0|false|no to disable. Merges in every repo still refuse while
 # HARBOR_DO_UNFREEZE is unset (queue-only freeze).
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
@@ -2761,8 +2761,8 @@ while :; do
   # CHECK_INTERVAL, so most cycles skip this block and fall straight through.
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
     # Auto-merge tick (firstmate #14 wiring). Kill switch FM_PR_AUTO_MERGE
-    # defaults to on; harbor merges stay refused while HARBOR_DO_UNFREEZE is
-    # unset. Never wakes — triage_log only.
+    # defaults to on; merges in every repo stay refused while
+    # HARBOR_DO_UNFREEZE is unset. Never wakes — triage_log only.
     auto_merge_out=
     if auto_merge_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE"       "$SCRIPT_DIR/fm-pr-auto-merge-tick.sh" 2>/dev/null); then
       if [ -n "$auto_merge_out" ]; then

@@ -2,7 +2,8 @@
 # Auto-merge when clean + green + Evidence (firstmate #14 / harbor #664 R1-R10).
 # Does not deploy or enable itself. Callers (watch / release ritual) invoke it.
 # While harbor queue-only freeze is on (HARBOR_DO_UNFREEZE unset / not truthy),
-# harbor-repo merges are refused. Protected paths always need Derick.
+# merges are refused for every repo (not only harbor). Protected paths always
+# need Derick.
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -19,7 +20,7 @@ Implements harbor #664 R1-R10 / firstmate #14:
   R6     clean + required CI green + gates -> squash merge with --match-head-commit
   R8     refuse on red CI, missing gates, unresolved ask-user
   R9     leave an Evidence / ledger note of what landed
-  freeze refuse harbor merges while HARBOR_DO_UNFREEZE is unset
+  freeze refuse merges in every repo while HARBOR_DO_UNFREEZE is unset
   protected refuse if PR touches GLOSSARY.md, AGENTS.md, or docs/adr/*
 USAGE
 }
@@ -85,8 +86,9 @@ else
   refuse "cannot parse GitHub PR URL: $URL"
 fi
 
-if [ "$REPO" = harbor ] && harbor_frozen; then
-  refuse "harbor queue-only freeze is on (HARBOR_DO_UNFREEZE unset) — not merging $URL"
+# The freeze covers every repo, not only */harbor (harbor #676; #737 leak).
+if harbor_frozen; then
+  refuse "harbor queue-only freeze is on (HARBOR_DO_UNFREEZE unset) — not merging $URL (freeze covers every repo; PR stays queued)"
 fi
 
 if task_has_open_ask_user; then

@@ -52,7 +52,7 @@ test_freeze_refuses_harbor_without_calling() {
   local c out
   c="$TMP_ROOT/freeze"; install_fake_auto "$c" ok
   write_poll "$c/state" t1 'https://github.com/nivasritech/harbor/pull/9'
-  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE= \
+  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE='' \
     FM_PR_AUTO_MERGE=on "$c/bin/fm-pr-auto-merge-tick.sh" 2>&1) || true
   case "$out" in *'refused freeze'*) pass "tick freeze refuses harbor" ;; *) fail "out=$out" ;; esac
   [ ! -f "$c/auto.log" ] || fail "freeze must not call auto-merge for harbor"
@@ -77,19 +77,60 @@ test_calls_auto_merge_when_unfrozen() {
     || fail "auto.log missing call"
 }
 
-test_non_harbor_not_blocked_by_freeze() {
+test_freeze_refuses_non_harbor_without_calling() {
   local c out
   c="$TMP_ROOT/other"; install_fake_auto "$c" ok
   write_poll "$c/state" t3 'https://github.com/nivasritech/firstmate/pull/3'
-  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE= \
+  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE='' \
     FM_PR_AUTO_MERGE=on "$c/bin/fm-pr-auto-merge-tick.sh" 2>&1) || true
-  case "$out" in *'auto-merge: ok t3'*) pass "non-harbor allowed while frozen" ;; *) fail "out=$out" ;; esac
+  case "$out" in
+    *'refused freeze for t3'*'queued, not merged'*) pass "tick freeze refuses non-harbor (queued)" ;;
+    *) fail "out=$out" ;;
+  esac
+  [ ! -f "$c/auto.log" ] || fail "freeze must not call auto-merge for non-harbor"
+}
+
+test_freeze_refuses_mixed_repos() {
+  local c out
+  c="$TMP_ROOT/mixed"; install_fake_auto "$c" ok
+  write_poll "$c/state" h1 'https://github.com/nivasritech/harbor/pull/11'
+  write_poll "$c/state" o1 'https://github.com/derickdsouza/some-app/pull/12'
+  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE=0 \
+    FM_PR_AUTO_MERGE=on "$c/bin/fm-pr-auto-merge-tick.sh" 2>&1) || true
+  case "$out" in *'refused freeze for h1'*) ;; *) fail "harbor not refused: $out"; return ;; esac
+  case "$out" in *'refused freeze for o1'*) ;; *) fail "other repo not refused: $out"; return ;; esac
+  case "$out" in *'auto-merge: ok'*) fail "nothing may merge while frozen: $out"; return ;; esac
+  [ ! -f "$c/auto.log" ] || { fail "freeze must not call auto-merge (mixed)"; return; }
+  pass "tick freeze refuses every repo (HARBOR_DO_UNFREEZE=0)"
+}
+
+test_unfrozen_non_harbor_calls_auto_merge() {
+  local c out
+  c="$TMP_ROOT/other-open"; install_fake_auto "$c" ok
+  write_poll "$c/state" t4 'https://github.com/nivasritech/firstmate/pull/4'
+  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE=1 \
+    FM_PR_AUTO_MERGE=on "$c/bin/fm-pr-auto-merge-tick.sh" 2>&1) || true
+  case "$out" in *'auto-merge: ok t4'*) pass "non-harbor uses normal rules when unfrozen" ;; *) fail "out=$out" ;; esac
+  grep -q 'called:t4:https://github.com/nivasritech/firstmate/pull/4' "$c/auto.log" \
+    || fail "auto.log missing non-harbor call"
+}
+
+test_unfrozen_refuse_passes_through() {
+  local c out
+  c="$TMP_ROOT/refuse-open"; install_fake_auto "$c" refuse
+  write_poll "$c/state" t5 'https://github.com/nivasritech/firstmate/pull/5'
+  out=$(FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" HARBOR_DO_UNFREEZE=1 \
+    FM_PR_AUTO_MERGE=on "$c/bin/fm-pr-auto-merge-tick.sh" 2>&1) || true
+  case "$out" in *'auto-merge: refused t5'*'missing Evidence'*) pass "unfrozen: merge-script refusal reported" ;; *) fail "out=$out" ;; esac
 }
 
 test_kill_switch_off
 test_freeze_refuses_harbor_without_calling
 test_idle_no_polls
 test_calls_auto_merge_when_unfrozen
-test_non_harbor_not_blocked_by_freeze
+test_freeze_refuses_non_harbor_without_calling
+test_freeze_refuses_mixed_repos
+test_unfrozen_non_harbor_calls_auto_merge
+test_unfrozen_refuse_passes_through
 echo "fm-pr-auto-merge-tick: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
