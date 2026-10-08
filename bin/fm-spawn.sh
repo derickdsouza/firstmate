@@ -644,6 +644,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-usage-lib.sh
 . "$SCRIPT_DIR/fm-usage-lib.sh"
+# shellcheck source=bin/fm-spawn-gate-lib.sh
+. "$SCRIPT_DIR/fm-spawn-gate-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -1684,6 +1686,11 @@ if [ "$RELAUNCH" -eq 0 ]; then
   SPAWN_TASK_SET_LOCK_HELD=1
   spawn_refuse_if_away_spend_cap
   spawn_require_relocated_queued_work
+  # Optional host gate (FM_SPAWN_GATE_CMD, bin/fm-spawn-gate-lib.sh): a fresh
+  # ship/scout spawn must pass it before any endpoint, worktree, or record exists.
+  if [ "$KIND" != secondmate ]; then
+    fm_spawn_gate_acquire "$ID" || exit 1
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   if spawn_remote_secondmate "$ID"; then

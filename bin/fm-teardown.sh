@@ -392,6 +392,8 @@ unset _teardown_source
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-usage-lib.sh
 . "$SCRIPT_DIR/fm-usage-lib.sh"
+# shellcheck source=bin/fm-spawn-gate-lib.sh
+. "$SCRIPT_DIR/fm-spawn-gate-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -3883,6 +3885,10 @@ else
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
+# Optional host gate release (FM_SPAWN_GATE_CMD); never fails the teardown.
+if [ "$KIND" != secondmate ]; then
+  fm_spawn_gate_release "$ID"
+fi
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
