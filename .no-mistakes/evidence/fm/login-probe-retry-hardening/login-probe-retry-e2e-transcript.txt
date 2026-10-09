@@ -1,0 +1,41 @@
+=== Scenario A: transient local pi catalog blip (the reported bug) ===
+exit=0
+OK   pi@vps
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+pi invocations: 2 (expect 2: one blip + one retry)
+
+=== Scenario B: persistent local pi catalog failure ===
+exit=1
+FAIL pi@vps (needs re-login)
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+pi invocations: 2 (expect 2: exactly one retry, then FAIL)
+
+=== Scenario C: Darwin host, remote VPS pi over ssh blips once ===
+exit=0
+OK   pi@mac
+OK   grok@mac
+OK   cursor@mac
+OK   claude@mac
+OK   pi@vps
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+ssh pi-catalog invocations: 2 (expect 2)
+
+=== Scenario D: remote VPS pi persistently broken ===
+exit=1
+OK   pi@mac
+OK   grok@mac
+OK   cursor@mac
+OK   claude@mac
+FAIL pi@vps (needs re-login)
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+ssh pi-catalog invocations: 2 (expect 2)
+
+ALL SCENARIOS: PASS
