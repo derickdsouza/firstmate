@@ -1,0 +1,9 @@
+### Scenario A - single transient `pi --list-models` catalog blip (2026-09-08/10-09 class)
+### PRE-FIX probe (parent commit 8c7c604):
+$ run .tmp-probe-eval/probe-prefix.sh   # fake pi: call 1 = blip, call 2 = healthy zai catalog
+FAIL pi@vps (needs re-login)
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=1
+pi invocations: 1  (pre-fix: FAILs after a single unverified pass)

@@ -1,0 +1,28 @@
+### Remote scenario - Darwin watch host probing the VPS over ssh (FM_LOGIN_PROBE_VPS_SSH=fakevps)
+### R1: remote `pi --list-models` blips once (transient catalog error)
+$ bin/fm-agent-login-probe.sh
+OK   pi@mac
+OK   grok@mac
+OK   cursor@mac
+OK   claude@mac
+OK   pi@vps
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=0
+remote pi invocations: 2  (single remote blip retried once -> remote OK)
+
+### R2: remote catalog down on BOTH passes (real credential problem)
+$ bin/fm-agent-login-probe.sh
+OK   pi@mac
+OK   grok@mac
+OK   cursor@mac
+OK   claude@mac
+FAIL pi@vps (needs re-login)
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=1
+remote pi invocations: 2  (double failure confirmed -> remote FAIL)
+
+### Note: the reachability gate `ssh <alias> true` requires non-empty stdout (e.g. an sshd Banner); with a fully silent ssh the pre-existing gate (unchanged by this fix) reports "ssh unreachable" before any catalog check runs. The fake ssh above emits a banner line, as the fleet sshd does.

@@ -1,0 +1,8 @@
+### Scenario B - catalog down on BOTH passes (real credential problem)
+$ bin/fm-agent-login-probe.sh          # fake pi: every call = blip
+FAIL pi@vps (needs re-login)
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=1
+pi invocations: 2  (retry confirmed the failure -> FAIL still fires)

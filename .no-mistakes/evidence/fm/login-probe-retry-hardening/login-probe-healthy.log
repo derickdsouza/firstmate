@@ -1,0 +1,8 @@
+### Scenario C - healthy catalog on first pass (normal day)
+$ bin/fm-agent-login-probe.sh
+OK   pi@vps
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=0
+pi invocations: 1  (no retry on first-pass OK)

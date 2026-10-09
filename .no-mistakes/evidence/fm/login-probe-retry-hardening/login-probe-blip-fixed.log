@@ -1,0 +1,9 @@
+### Scenario A - single transient `pi --list-models` catalog blip
+### FIXED probe (target commit 6e9e1e0):
+$ bin/fm-agent-login-probe.sh          # same fake pi: call 1 = blip, call 2 = healthy zai catalog
+OK   pi@vps
+OK   grok@vps
+OK   cursor@vps
+OK   claude@vps
+exit_code=0
+pi invocations: 2  (one retry, then OK - no FAIL, no firstmate wake)
