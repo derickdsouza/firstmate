@@ -3,8 +3,10 @@
 # pi, grok, cursor-agent, and claude (Claude Code).
 #
 # Prints one OK or FAIL line per target. Exit 0 when every probe passes;
-# exit 1 when at least one needs (re)login. Safe to run from cron, when-watches,
-# or an interactive shell on macOS and Linux.
+# exit 1 when at least one needs (re)login. A failed pi --list-models catalog
+# pass is retried once before FAIL so a single transient blip never wakes the
+# login-watch. Safe to run from cron, when-watches, or an interactive shell on
+# macOS and Linux.
 #
 # Local host label is "mac" on Darwin and "vps" on Linux. Darwin uses
 # /bin/zsh -l for pi so login-shell keychain loaders run; Linux uses the
@@ -70,13 +72,20 @@ pi_list_models() {
   fi
 }
 
+# True when pi --list-models lists a zai model. Retries the catalog once on a
+# failed pass so a single transient blip never becomes FAIL (login-watch).
+pi_catalog_ok() {
+  printf '%s\n' "$(pi_list_models)" | grep -q '^zai' && return 0
+  printf '%s\n' "$(pi_list_models)" | grep -q '^zai'
+}
+
 check_local_pi() {  # <host-label>
   local host=$1
   if ! command -v pi >/dev/null 2>&1; then
     probe_fail "$host" pi 'pi not installed'
     return
   fi
-  if printf '%s\n' "$(pi_list_models)" | grep -q '^zai'; then
+  if pi_catalog_ok; then
     probe_ok "$host" pi
   else
     probe_fail "$host" pi 'needs re-login'
@@ -141,7 +150,9 @@ check_vps() {  # <ssh-alias>
     probe_fail vps claude 'ssh unreachable'
     return
   fi
-  if has_stdout "${ssh[@]}" 'source /root/.bashrc 2>/dev/null; /root/.nvm/current/bin/pi --list-models 2>/dev/null | grep -c "^zai"'; then
+  # Single retry: a transient remote pi catalog blip must not become FAIL.
+  if has_stdout "${ssh[@]}" 'source /root/.bashrc 2>/dev/null; /root/.nvm/current/bin/pi --list-models 2>/dev/null | grep -c "^zai"' ||
+     has_stdout "${ssh[@]}" 'source /root/.bashrc 2>/dev/null; /root/.nvm/current/bin/pi --list-models 2>/dev/null | grep -c "^zai"'; then
     probe_ok vps pi
   else
     probe_fail vps pi 'needs re-login'
